@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.env
+*.log
+npm-debug.log*
+yarn-error.log*
+.DS_Store
+state.json
+bot.out.log
+bot.err.log
+youtube-cookies.txt
+deploy/certs/
+deploy/certs/*.pem
+deploy/certs/*.key

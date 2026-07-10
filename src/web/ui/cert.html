@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Сертификат — Jellyfin Discord Bot</title>
+    <link rel="stylesheet" href="styles.css" />
+    <style>
+      .wrap {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 16px;
+      }
+      .card h2 {
+        margin: 0 0 10px;
+        font-size: 15px;
+      }
+      .muted2 {
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .field {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin: 10px 0;
+      }
+      .field label {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      input[type='file'],
+      input[type='password'] {
+        background: var(--panel-2);
+        color: var(--text);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 8px 10px;
+        font-size: 13px;
+      }
+      .primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #fff;
+        font-weight: 600;
+      }
+      .danger {
+        color: #ff9b9b;
+        border-color: #6b2b2b;
+      }
+      .ok {
+        color: #8fe388;
+      }
+      .bad {
+        color: #ff9b9b;
+      }
+      code {
+        background: var(--panel-2);
+        padding: 1px 5px;
+        border-radius: 5px;
+      }
+      #msg {
+        font-size: 13px;
+        min-height: 18px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="brand">Сертификат сайта</div>
+      <a href="/" class="status" style="text-decoration: none">← панель</a>
+    </header>
+
+    <div class="wrap">
+      <div class="card">
+        <h2>Текущий статус</h2>
+        <div id="status" class="muted2">загрузка…</div>
+      </div>
+
+      <div class="card">
+        <h2>Загрузить .p12 / .pfx</h2>
+        <div class="muted2">
+          Тот же файл, что у Jellyfin. Должен покрывать <code>ds.starald.ru</code> (или быть
+          wildcard <code>*.starald.ru</code>). Пароль никуда не сохраняется.
+        </div>
+        <div class="field">
+          <label>Файл сертификата (.p12 / .pfx)</label>
+          <input id="p12file" type="file" accept=".p12,.pfx" />
+        </div>
+        <div class="field">
+          <label>Пароль от .p12</label>
+          <input id="p12pass" type="password" autocomplete="off" />
+        </div>
+        <button id="applyP12" class="primary">Применить</button>
+      </div>
+
+      <div class="card">
+        <h2>Или отдельные PEM-файлы</h2>
+        <div class="muted2">Сертификат (с цепочкой) и приватный ключ в формате PEM.</div>
+        <div class="field">
+          <label>Сертификат (fullchain .pem / .crt)</label>
+          <input id="certfile" type="file" accept=".pem,.crt,.cer" />
+        </div>
+        <div class="field">
+          <label>Приватный ключ (.pem / .key)</label>
+          <input id="keyfile" type="file" accept=".pem,.key" />
+        </div>
+        <button id="applyPem" class="primary">Применить</button>
+      </div>
+
+      <div class="card">
+        <h2>Вернуть автоматический Let's Encrypt</h2>
+        <div class="muted2">Откатиться на авто-сертификат (продлевается сам).</div>
+        <button id="revert" class="danger" style="margin-top: 10px">Вернуть Let's Encrypt</button>
+      </div>
+
+      <div id="msg"></div>
+    </div>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+
+      function fileToBase64(file) {
+        return new Promise((res, rej) => {
+          const r = new FileReader();
+          r.onload = () => res(String(r.result).split(',')[1]);
+          r.onerror = rej;
+          r.readAsDataURL(file);
+        });
+      }
+      function fileToText(file) {
+        return new Promise((res, rej) => {
+          const r = new FileReader();
+          r.onload = () => res(String(r.result));
+          r.onerror = rej;
+          r.readAsText(file);
+        });
+      }
+      function esc(s) {
+        return (s || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]);
+      }
+      function msg(text, ok) {
+        const m = $('msg');
+        m.textContent = text;
+        m.className = ok === true ? 'ok' : ok === false ? 'bad' : '';
+      }
+
+      async function loadStatus() {
+        const r = await fetch('/api/cert/status');
+        if (r.status === 401) {
+          $('status').textContent = 'Не авторизован. Войди на панели.';
+          return;
+        }
+        const i = await r.json();
+        if (i.mode === 'letsencrypt') {
+          $('status').innerHTML = 'Сейчас: <b>автоматический Let’s Encrypt</b> (продлевается сам).';
+          return;
+        }
+        const cover =
+          i.coversPanel === false
+            ? '<span class="bad">НЕ покрывает ds.starald.ru — браузер будет ругаться!</span>'
+            : '<span class="ok">покрывает ds.starald.ru</span>';
+        $('status').innerHTML =
+          'Сейчас: <b>свой сертификат</b><br>' +
+          (i.subject ? `Subject: <code>${esc(i.subject)}</code><br>` : '') +
+          (i.sans ? `SAN: <code>${esc(i.sans.join(', '))}</code><br>` : '') +
+          (i.notAfter ? `Истекает: <code>${esc(i.notAfter)}</code><br>` : '') +
+          cover;
+      }
+
+      function showInfo(info) {
+        if (info && info.coversPanel === false) {
+          msg('Применено, но сертификат НЕ покрывает ds.starald.ru — браузер будет предупреждать. Лучше wildcard *.starald.ru.', false);
+        } else {
+          msg('Готово — сертификат применён.', true);
+        }
+        loadStatus();
+      }
+
+      $('applyP12').addEventListener('click', async () => {
+        const f = $('p12file').files[0];
+        if (!f) return msg('Выбери файл .p12', false);
+        msg('Применяю…');
+        try {
+          const fileBase64 = await fileToBase64(f);
+          const r = await fetch('/api/cert/p12', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fileBase64, password: $('p12pass').value }),
+          });
+          const d = await r.json();
+          if (d.ok) showInfo(d.info);
+          else msg(d.message || 'Ошибка', false);
+        } catch (e) {
+          msg('Ошибка загрузки', false);
+        }
+      });
+
+      $('applyPem').addEventListener('click', async () => {
+        const cf = $('certfile').files[0];
+        const kf = $('keyfile').files[0];
+        if (!cf || !kf) return msg('Выбери и сертификат, и ключ', false);
+        msg('Применяю…');
+        try {
+          const [certPem, keyPem] = [await fileToText(cf), await fileToText(kf)];
+          const r = await fetch('/api/cert/pem', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ certPem, keyPem }),
+          });
+          const d = await r.json();
+          if (d.ok) showInfo(d.info);
+          else msg(d.message || 'Ошибка', false);
+        } catch (e) {
+          msg('Ошибка загрузки', false);
+        }
+      });
+
+      $('revert').addEventListener('click', async () => {
+        msg('Возвращаю Let’s Encrypt…');
+        const r = await fetch('/api/cert/revert', { method: 'POST' });
+        const d = await r.json();
+        if (d.ok) {
+          msg('Готово — снова автоматический Let’s Encrypt.', true);
+          loadStatus();
+        } else msg(d.message || 'Ошибка', false);
+      });
+
+      loadStatus();
+    </script>
+  </body>
+</html>

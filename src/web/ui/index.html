@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Jellyfin Discord Bot</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <!-- Экран логина -->
+    <div id="login" class="login hidden">
+      <form id="loginForm" class="login-card">
+        <div class="login-title">JellyfinDS</div>
+        <input id="loginPass" type="password" placeholder="Пароль" autocomplete="current-password" />
+        <button type="submit">Войти</button>
+        <div id="loginError" class="login-error hidden"></div>
+      </form>
+    </div>
+
+    <!-- Панель -->
+    <div id="app" class="hidden">
+      <header>
+        <div class="brand">JellyfinDS</div>
+        <div class="head-right">
+          <span id="status" class="status">…</span>
+          <button id="jellyfinLink" class="icon" title="Перейти на Jellyfin">Jellyfin</button>
+          <button id="historyBtn" class="icon" title="История прослушиваний">История</button>
+          <button id="adminBtn" class="icon" title="Администрирование (сертификат, логи)">Администрирование</button>
+          <button id="logout" class="icon" title="Выйти">Выход</button>
+        </div>
+      </header>
+
+      <main>
+        <section class="left">
+          <div class="row channel-row">
+            <label for="channel">Канал</label>
+            <select id="channel"></select>
+            <button id="refreshChannels" class="icon" title="Обновить список каналов">⟳</button>
+          </div>
+
+          <div class="tabs">
+            <button class="tab active" data-tab="jellyfin">Jellyfin</button>
+            <button class="tab" data-tab="youtube">YouTube</button>
+            <button class="tab" data-tab="yandex">Яндекс</button>
+            <button class="tab" data-tab="vk">VK</button>
+          </div>
+
+          <div id="tabJellyfin" class="tabpane">
+            <div class="row">
+              <select id="type">
+                <option value="track">Трек</option>
+                <option value="album">Альбом</option>
+                <option value="playlist">Плейлист</option>
+                <option value="artist">Исполнитель</option>
+              </select>
+              <input id="search" type="text" placeholder="Поиск…" autocomplete="off" />
+              <button id="randomBtn" class="random" title="Случайный трек в очередь">Рандом</button>
+            </div>
+            <ul id="results" class="results"></ul>
+          </div>
+
+          <div id="tabYoutube" class="tabpane hidden">
+            <div class="row">
+              <input id="ytSearch" type="text" placeholder="Ссылка или название…" autocomplete="off" />
+              <button id="ytGo" class="random">Найти</button>
+            </div>
+            <ul id="ytResults" class="results"></ul>
+          </div>
+
+          <div id="tabYandex" class="tabpane hidden">
+            <div class="row">
+              <select id="yaType">
+                <option value="track">Трек</option>
+                <option value="album">Альбом</option>
+                <option value="artist">Исполнитель</option>
+                <option value="playlist">Плейлист</option>
+              </select>
+              <input id="yaSearch" type="text" placeholder="Ссылка или название…" autocomplete="off" />
+              <button id="yaGo" class="random">Найти</button>
+            </div>
+            <ul id="yaResults" class="results"></ul>
+          </div>
+
+          <div id="tabVk" class="tabpane hidden">
+            <div class="row">
+              <select id="vkType">
+                <option value="track">Трек</option>
+                <option value="playlist">Плейлист</option>
+              </select>
+              <input id="vkSearch" type="text" placeholder="Ссылка или название…" autocomplete="off" />
+              <button id="vkGo" class="random">Найти</button>
+            </div>
+            <ul id="vkResults" class="results"></ul>
+          </div>
+        </section>
+
+        <section class="right">
+          <div id="nowplaying" class="nowplaying">
+            <div class="np-empty">Ничего не играет</div>
+          </div>
+          <div class="controls">
+            <button id="pause" title="Пауза / продолжить">
+              <span class="material-icons">play_arrow</span>
+            </button>
+            <button id="skip" title="Следующий">
+              <span class="material-icons">skip_next</span>
+            </button>
+            <button id="shuffle" title="Перемешать">
+              <span class="material-icons">shuffle</span>
+            </button>
+            <button id="stop" title="Стоп и очистить">
+              <span class="material-icons">stop</span>
+            </button>
+            <button id="leave" title="Покинуть канал">
+              <span class="material-icons">logout</span>
+            </button>
+          </div>
+          <h3>Очередь</h3>
+          <ul id="queue" class="queue"></ul>
+        </section>
+      </main>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+
+    <!-- Диалог администрирования -->
+    <div id="adminModal" class="modal hidden">
+      <div class="modal-card admin-card">
+        <div class="modal-head">
+          <span class="modal-title">Администрирование</span>
+          <button id="adminClose" class="icon" title="Закрыть">✕</button>
+        </div>
+        <div id="adminBody" class="admin-body"></div>
+      </div>
+    </div>
+
+    <!-- Диалог истории прослушиваний -->
+    <div id="historyModal" class="modal hidden">
+      <div class="modal-card">
+        <div class="modal-head">
+          <span class="modal-title">История прослушиваний</span>
+          <button id="historyClose" class="icon" title="Закрыть">✕</button>
+        </div>
+        <ul id="historyList" class="results"></ul>
+      </div>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>

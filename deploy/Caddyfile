@@ -1,0 +1,51 @@
+# Caddy: один слушатель на 80/443, маршрутизация по домену + авто-HTTPS (Let's Encrypt).
+#
+#   роутер 443 ─► Caddy ─┬─ starald.ru    → Jellyfin (127.0.0.1:8096)
+#                        └─ ds.starald.ru → панель бота (127.0.0.1:8730)
+#
+# Запуск:  caddy run --config D:\programming\DiscordJellyfin\deploy\Caddyfile
+# Проверка синтаксиса:  caddy validate --config D:\programming\DiscordJellyfin\deploy\Caddyfile
+
+{
+	email staraldeal@gmail.com
+}
+
+# Явный http→https редирект (без авто-вычисления порта).
+http://starald.ru, http://ds.starald.ru, http://router.starald.ru {
+	redir https://{host}{uri}
+}
+
+# Jellyfin: ходим в его HTTPS-порт 8920, чтобы Jellyfin (RequireHttps=true) не
+# редиректил на :8920. tls_insecure_skip_verify — т.к. подключаемся по 127.0.0.1.
+starald.ru {
+	reverse_proxy https://127.0.0.1:8920 {
+		transport http {
+			tls_insecure_skip_verify
+		}
+	}
+}
+
+# Веб-панель бота
+ds.starald.ru {
+	# Пусто = авто Let's Encrypt; deploy/apply-cert.ps1 впишет сюда tls со своим сертификатом.
+	import D:/programming/DiscordJellyfin/deploy/certs/ds-tls.caddy
+	reverse_proxy 127.0.0.1:8730
+}
+
+# Локальный доступ бота к Jellyfin (без публичного round-trip → работает без VPN).
+# Слушает только 127.0.0.1. Бот ходит сюда: JELLYFIN_URL=http://127.0.0.1:8731
+http://127.0.0.1:8731 {
+	reverse_proxy https://127.0.0.1:8920 {
+		transport http {
+			tls_insecure_skip_verify
+		}
+	}
+}
+
+router.starald.ru {
+	reverse_proxy https://192.168.100.1 {
+		transport http {
+			tls_insecure_skip_verify
+		}
+	}
+}

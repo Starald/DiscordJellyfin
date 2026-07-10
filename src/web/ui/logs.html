@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Логи — Jellyfin Discord Bot</title>
+    <style>
+      body {
+        margin: 0;
+        background: #0f1116;
+        color: #e6e9ef;
+        font: 13px/1.45 "Segoe UI", system-ui, sans-serif;
+      }
+      header {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        padding: 10px 14px;
+        border-bottom: 1px solid #2a2f3a;
+        background: #171a21;
+        position: sticky;
+        top: 0;
+      }
+      header a,
+      header button,
+      header input {
+        background: #1e222b;
+        color: #e6e9ef;
+        border: 1px solid #2a2f3a;
+        border-radius: 8px;
+        padding: 7px 10px;
+        font-size: 13px;
+        text-decoration: none;
+        cursor: pointer;
+      }
+      header input {
+        cursor: text;
+      }
+      .title {
+        font-weight: 600;
+        margin-right: auto;
+      }
+      #log {
+        margin: 0;
+        padding: 12px 14px;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-family: "Cascadia Code", Consolas, monospace;
+        font-size: 12px;
+      }
+      .voice {
+        color: #5bd6ff;
+      }
+      .warn {
+        color: #ffd27a;
+      }
+      .err {
+        color: #ff9b9b;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <span class="title">📋 Логи бота</span>
+      <input id="filter" placeholder="фильтр (напр. voice)" />
+      <button id="toggle">⏸ пауза</button>
+      <button id="clear">очистить вид</button>
+      <a href="/">← панель</a>
+    </header>
+    <pre id="log">загрузка…</pre>
+
+    <script>
+      const logEl = document.getElementById('log');
+      const filterEl = document.getElementById('filter');
+      const toggleEl = document.getElementById('toggle');
+      let auto = true;
+      let lines = [];
+
+      function render() {
+        const f = filterEl.value.trim().toLowerCase();
+        const shown = f ? lines.filter((l) => l.toLowerCase().includes(f)) : lines;
+        logEl.innerHTML = shown
+          .map((l) => {
+            const cls = /\[voice/i.test(l)
+              ? 'voice'
+              : /\[ERROR\]/.test(l)
+                ? 'err'
+                : /\[WARN\]/.test(l)
+                  ? 'warn'
+                  : '';
+            const esc = l.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]);
+            return cls ? `<span class="${cls}">${esc}</span>` : esc;
+          })
+          .join('\n');
+      }
+
+      async function poll() {
+        if (!auto) return;
+        try {
+          const r = await fetch('/api/logs');
+          if (r.status === 401) {
+            logEl.textContent = 'Не авторизован. Войди на панели (/), затем обнови эту страницу.';
+            return;
+          }
+          const d = await r.json();
+          lines = d.lines || [];
+          const atBottom =
+            Math.abs(window.innerHeight + window.scrollY - document.body.scrollHeight) < 60;
+          render();
+          if (atBottom) window.scrollTo(0, document.body.scrollHeight);
+        } catch (e) {
+          /* ignore */
+        }
+      }
+
+      filterEl.addEventListener('input', render);
+      toggleEl.addEventListener('click', () => {
+        auto = !auto;
+        toggleEl.textContent = auto ? '⏸ пауза' : '▶ продолжить';
+        if (auto) poll();
+      });
+      document.getElementById('clear').addEventListener('click', () => {
+        lines = [];
+        render();
+      });
+
+      poll();
+      const pollId = setInterval(poll, 1500);
+      // Останавливаем опрос при закрытии/скрытии вкладки — иначе сервер опрашивается «вечно».
+      window.addEventListener('pagehide', () => clearInterval(pollId));
+      setTimeout(() => window.scrollTo(0, document.body.scrollHeight), 400);
+    </script>
+  </body>
+</html>
