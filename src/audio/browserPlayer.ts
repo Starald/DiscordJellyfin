@@ -118,6 +118,7 @@ export class BrowserPlayer {
   skip(): boolean {
     if (!this.current && this.queue.length === 0) return false;
     this.suppressLoop = true; // скип не должен повторять текущий трек
+    this.paused = false;
     this.stopTranscoder();
     void this.playNext();
     return true;
@@ -128,7 +129,7 @@ export class BrowserPlayer {
     this.suppressLoop = true;
     this.current = null;
     this.playId = null;
-    this.paused = true;
+    this.paused = false;
     this.stopTranscoder();
   }
 
@@ -166,7 +167,7 @@ export class BrowserPlayer {
 
   /** Трек выбран, но байты ещё не пошли (резолв URL источника либо FFmpeg только стартует). */
   get isLoading(): boolean {
-    if (!this.current) return false;
+    if (!this.current || this.paused) return false;
     return !this.currentTranscoder || !this.firstByteReceived;
   }
 
@@ -205,7 +206,7 @@ export class BrowserPlayer {
   }
 
   private async playNext(): Promise<void> {
-    if (this.destroyed || this.paused) return;
+    if (this.destroyed) return;
     this.stopTranscoder();
 
     const finished = this.current;

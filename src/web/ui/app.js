@@ -1216,12 +1216,12 @@ function renderState(s) {
     if (bar) bar.classList.toggle('loading', !!np.buffering);
     const note = el.querySelector('.np-note');
     if (note) {
-      if (np.buffering) {
-        note.textContent = 'загрузка…';
-        note.className = 'np-note loading-note';
-      } else if (s.paused) {
+      if (s.paused) {
         note.textContent = '⏸ на паузе';
         note.className = 'np-note paused';
+      } else if (np.buffering) {
+        note.textContent = 'загрузка…';
+        note.className = 'np-note loading-note';
       } else {
         note.textContent = '';
         note.className = 'np-note';
