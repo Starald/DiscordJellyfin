@@ -48,8 +48,9 @@ export class BrowserPlayer {
   private loopOne = false;
   private suppressLoop = false;
   private destroyed = false;
-  /** true — ничего не льётся: флажок выключен, либо очередь пуста. Стартовое состояние — выключено. */
-  private paused = true;
+/** true — очередь на паузе (глобально, для всех окон). Управляется кнопкой «пауза»,
+ *  не флажком «слушать в этом окне» — тот теперь чисто клиентский, см. app.js. */
+  private paused = false;
 
   // ── Очередь ──────────────────────────────────────────────────────────────
 
@@ -127,11 +128,6 @@ export class BrowserPlayer {
     this.suppressLoop = true;
     this.current = null;
     this.playId = null;
-    this.paused = true;
-    this.stopTranscoder();
-  }
-
-  pause(): void {
     this.paused = true;
     this.stopTranscoder();
   }
@@ -239,6 +235,21 @@ export class BrowserPlayer {
   // ── FFmpeg → MP3 → HTTP ──────────────────────────────────────────────────
 
   private startTranscoder(track: Track, startMs: number): void {
+    // КРИТИЧНО: убить предыдущий прогон (если был) ДО старта нового. Раньше seek()/resume
+    // просто перезаписывали this.currentTranscoder новым процессом, а старый молча продолжал
+    // работать и писать байты в те же listeners — два FFmpeg одновременно в один HTTP-поток
+    // давали характерный баг «перемотка ломает звук, играет пробелами» (перемешанные MP3-байты
+    // от двух процессов). Плюс явно закрываем прежних слушателей: они подписаны на байты
+    // прошлого прогона, а не нового, и их «зависший» коннект тоже нужно оборвать.
+    this.stopTranscoder();
+    for (const res of this.listeners) {
+      try {
+        res.end();
+      } catch {
+        /* ignore */
+      }
+    }
+    this.listeners.clear();
     this.playId = crypto.randomUUID();
     this.startedAt = Date.now();
     this.seekOffsetMs = startMs;

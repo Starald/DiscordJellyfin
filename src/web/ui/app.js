@@ -1164,10 +1164,9 @@ function renderState(s) {
         : 'воспроизведение'
       : 'готово';
 
-  // Иконка play/pause (кнопка в Discord-режиме) / состояние чекбокса (режим браузера).
+  // Иконка play/pause (общая кнопка — управляет паузой для всех окон).
   const pauseIcon = $('pause').querySelector('.material-icons');
   if (pauseIcon) pauseIcon.textContent = s.nowPlaying && !s.paused ? 'pause' : 'play_arrow';
-  if ($('pause').type === 'checkbox') $('pause').checked = !s.paused;
 
   // Предвыбор запомненного канала — один раз, пока пользователь сам не выбрал.
   if (!channelDefaulted && s.lastChannelId) {
@@ -1359,36 +1358,43 @@ $('channel')?.addEventListener('change', async () => {
   poll();
 });
 
-// ── Режим «в браузере»: реальное аудио в <audio>, управляемое чекбоксом ──────────
-// Клик по чекбоксу — тот самый пользовательский жест, без которого браузер не даст
-// стартовать .play(); поэтому дёргаем audio.play()/pause() прямо тут, а не в poll().
-if (!CHANNEL_MODE) {
-  $('pause').addEventListener('click', () => {
-    const audio = $('browserAudio');
-    if (!audio) return;
-    if ($('pause').checked) audio.play().catch(() => {});
-    else audio.pause();
-  });
-}
-
+// ── Режим «в браузере»: реальное аудио в <audio>, управляемое per-window чекбоксом ──
+// «Слушать в этом окне» НЕ трогает сервер вообще — это чисто локальный выбор: слушать ли
+// именно в этой вкладке. Пауза/скип/шафл/стоп остаются общими (кнопки выше, как в Discord-
+// режиме) — они управляют одной на всех очередью. Клик по чекбоксу — тот самый пользова-
+// тельский жест, без которого браузер не даст стартовать .play().
 let lastBrowserPlayId = null;
+$('listenToggle')?.addEventListener('change', () => {
+  const audio = $('browserAudio');
+  const toggle = $('listenToggle');
+  if (!audio || !toggle) return;
+  if (toggle.checked) {
+    if (lastBrowserPlayId) {
+      audio.src = `/api/browser/stream?play=${encodeURIComponent(lastBrowserPlayId)}`;
+      audio.play().catch(() => {});
+    }
+    } else {
+    audio.pause();
+    audio.removeAttribute('src');
+    audio.load();     
+  }
+  });
+
 function updateBrowserAudio(s) {
   const audio = $('browserAudio');
   if (!audio) return;
-  const playId = s.nowPlaying && s.nowPlaying.playId;
-  if (!playId) {
-    if (lastBrowserPlayId !== null) {
-      lastBrowserPlayId = null;
+  const playId = s.nowPlaying ? s.nowPlaying.playId : null;
+  if (playId === lastBrowserPlayId) return; // трек/прогон не менялся — нечего делать
+  lastBrowserPlayId = playId;
+  const toggle = $('listenToggle');
+  if (!toggle || !toggle.checked) return; // это окно не слушает — просто запомнили playId на будущее
+  if (playId) {  
+    audio.src = `/api/browser/stream?play=${encodeURIComponent(playId)}`;
+    audio.play().catch(() => {});
+    } else {
       audio.pause();
       audio.removeAttribute('src');
       audio.load();
-    }
-    return;
-  }
-  if (playId !== lastBrowserPlayId) {
-    lastBrowserPlayId = playId;
-    audio.src = `/api/browser/stream?play=${encodeURIComponent(playId)}`;
-    if (!s.paused) audio.play().catch(() => {});
   }
 }
 
