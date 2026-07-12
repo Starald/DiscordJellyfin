@@ -20,7 +20,7 @@ export interface BrowserQueueSnapshot {
   paused: boolean;
 }
 
-const MP3_BITRATE = '192k';
+const MP3_BITRATE = '320k';
 
 /**
  * Плеер "воспроизведение в браузере" — та же модель очереди, что у GuildMusicPlayer
@@ -127,6 +127,11 @@ export class BrowserPlayer {
     this.suppressLoop = true;
     this.current = null;
     this.playId = null;
+    this.paused = true;
+    this.stopTranscoder();
+  }
+
+  pause(): void {
     this.paused = true;
     this.stopTranscoder();
   }

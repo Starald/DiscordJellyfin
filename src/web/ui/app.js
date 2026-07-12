@@ -326,7 +326,9 @@ $('logout').addEventListener('click', async () => {
 });
 
 $('jellyfinLink').addEventListener('click', () => window.open('https://starald.ru', '_blank'));
-$('browserModeBtn')?.addEventListener('click', () => window.open('browser.html', '_blank'));
+$('browserModeBtn')?.addEventListener('click', () => {
+  window.location.href = 'browser.html';
+});
 $('backToPanelBtn')?.addEventListener('click', () => {
   window.location.href = 'index.html';
 });
