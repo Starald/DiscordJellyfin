@@ -51,6 +51,11 @@ export class BrowserPlayer {
 /** true — очередь на паузе (глобально, для всех окон). Управляется кнопкой «пауза»,
  *  не флажком «слушать в этом окне» — тот теперь чисто клиентский, см. app.js. */
   private paused = false;
+  private readonly onTrackStart?: (track: Track) => void;
+
+  constructor(opts?: { onTrackStart?: (track: Track) => void }) {
+    this.onTrackStart = opts?.onTrackStart;
+  }
 
   // ── Очередь ──────────────────────────────────────────────────────────────
 
@@ -226,6 +231,7 @@ export class BrowserPlayer {
       await this.ensureResolved(next);
       this.startTranscoder(next, 0);
       this.prefetchNext();
+      this.onTrackStart?.(next);
     } catch (err) {
       logger.error(`[browser] Не удалось создать поток для "${next.title}":`, err);
       this.current = null;

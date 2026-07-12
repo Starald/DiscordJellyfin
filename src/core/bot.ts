@@ -166,7 +166,7 @@ export class Bot {
     );
     this.yandex = new YandexMusic(this.config.yandex.token ?? '', this.config.yandex.proxy);
     this.vk = new Vk(this.config.vk.token ?? '', this.config.vk.userAgent, this.config.vk.proxy);
-    this.browserPlayer = new BrowserPlayer();
+    this.browserPlayer = new BrowserPlayer({ onTrackStart: (track) => this.recordBrowserHistory(track) });
     this.client = new Client({
       intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
     });
@@ -775,6 +775,30 @@ export class Bot {
     }
     // Jellyfin: прямой стрим по id (свежий URL с api_key — на диск он не сохранялся).
     return { ...base, streamUrl: this.jellyfin.getStreamUrl(item.id) };
+  }
+
+  /**
+   * Записать трек в ОБЩУЮ историю (тот же state.json, что читает getRecentHistory() и что
+   * пишет GuildMusicPlayer.recordHistory() из Discord-режима) — история одна на оба режима,
+   * не две разные. В отличие от Discord-версии, каждый раз читаем с диска заново, а не из
+   * своего in-memory кэша: у browserPlayer его и нет, так что нечему разъезжаться с тем,
+   * что параллельно пишет Discord-плеер (или наоборот) при переключении между режимами.
+   */
+  private recordBrowserHistory(track: Track): void {
+    const hist = loadState().history ?? [];
+    if (hist[0]?.id === track.id) return;
+    hist.unshift({
+      id: track.id,
+      title: track.title,
+      artist: track.artist,
+      durationMs: track.durationMs,
+      source: track.source,
+      thumbUrl: track.thumbUrl,
+      imageUrl: track.imageUrl,
+      albumId: track.albumId,
+    });
+    if (hist.length > 100) hist.length = 100;
+    saveState({ history: hist });
   }
 
   // ── Режим «Проигрывание в браузере» ──────────────────────────────────────────
