@@ -2,6 +2,26 @@
 
 const $ = (id) => document.getElementById(id);
 
+// ── Режим страницы ────────────────────────────────────────────────────────────
+// index.html (обычная панель) содержит #channel; browser.html — нет. Один app.js
+// обслуживает обе страницы: разница — только префикс API и часть привязок ниже.
+const CHANNEL_MODE = !!$('channel');
+const API_BASE = CHANNEL_MODE ? '/api' : '/api/browser';
+
+/**
+ * В режиме Discord — читает выбранный канал (или показывает тост и просит выбрать).
+ * В режиме браузера канал не нужен вовсе — сразу «ок» без channelId.
+ */
+function requireChannel() {
+  if (!CHANNEL_MODE) return { ok: true, channelId: undefined };
+  const channelId = $('channel').value;
+  if (!channelId) {
+    toast('Сначала выбери голосовой канал');
+    return { ok: false, channelId: undefined };
+  }
+  return { ok: true, channelId };
+}
+
 // ── API клиент ────────────────────────────────────────────────────────────────
 const api = {
   async me() {
@@ -35,7 +55,7 @@ const api = {
     return r.ok ? r.json() : { ok: false };
   },
   async state() {
-    const r = await fetch('/api/state');
+    const r = await fetch(`${API_BASE}/state`);
     if (r.status === 401) throw new Error('unauth');
     return r.json();
   },
@@ -62,7 +82,7 @@ const api = {
     return r.ok ? (await r.json()).tracks : [];
   },
   async play(opts) {
-    const r = await fetch('/api/play', {
+    const r = await fetch(`${API_BASE}/play`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(opts),
@@ -70,32 +90,32 @@ const api = {
     return r.json();
   },
   async control(action) {
-    const r = await fetch('/api/control/' + action, { method: 'POST' });
+    const r = await fetch(`${API_BASE}/control/` + action, { method: 'POST' });
     return r.ok ? r.json() : {};
   },
   async seek(positionMs) {
-    await fetch('/api/seek', {
+    await fetch(`${API_BASE}/seek`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ positionMs }),
     });
   },
   async queueRemove(index) {
-    await fetch('/api/queue/remove', {
+    await fetch(`${API_BASE}/queue/remove`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ index }),
     });
   },
   async queueMove(from, to) {
-    await fetch('/api/queue/move', {
+    await fetch(`${API_BASE}/queue/move`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ from, to }),
     });
   },
   async random(channelId, position) {
-    const r = await fetch('/api/random', {
+    const r = await fetch(`${API_BASE}/random`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ channelId, position }),
@@ -107,7 +127,7 @@ const api = {
     return r.ok ? (await r.json()).items : [];
   },
   async ytPlay(opts) {
-    const r = await fetch('/api/yt/play', {
+    const r = await fetch(`${API_BASE}/yt/play`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(opts),
@@ -135,7 +155,7 @@ const api = {
     return r.ok ? (await r.json()).tracks : [];
   },
   async yaPlay(opts) {
-    const r = await fetch('/api/ya/play', {
+    const r = await fetch(`${API_BASE}/ya/play`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(opts),
@@ -155,7 +175,7 @@ const api = {
     return r.ok ? (await r.json()).tracks : [];
   },
   async vkPlay(opts) {
-    const r = await fetch('/api/vk/play', {
+    const r = await fetch(`${API_BASE}/vk/play`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(opts),
@@ -167,7 +187,7 @@ const api = {
     return r.ok ? (await r.json()).items : [];
   },
   async historyPlay(channelId, id, position) {
-    const r = await fetch('/api/history/play', {
+    const r = await fetch(`${API_BASE}/history/play`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ channelId, id, position }),
@@ -306,6 +326,10 @@ $('logout').addEventListener('click', async () => {
 });
 
 $('jellyfinLink').addEventListener('click', () => window.open('https://starald.ru', '_blank'));
+$('browserModeBtn')?.addEventListener('click', () => window.open('browser.html', '_blank'));
+$('backToPanelBtn')?.addEventListener('click', () => {
+  window.location.href = 'index.html';
+});
 
 // ── Администрирование (пароль → сертификат / логи) ─────────────────────────────
 async function openAdmin() {
@@ -416,12 +440,9 @@ function renderHistory(items) {
 }
 
 async function histPlay(item, position) {
-  const channelId = $('channel').value;
-  if (!channelId) {
-    toast('Сначала выбери голосовой канал');
-    return;
-  }
-  const res = await api.historyPlay(channelId, item.id, position);
+  const g = requireChannel();
+  if (!g.ok) return;
+  const res = await api.historyPlay(g.channelId, item.id, position);
   toast(res.message || 'Готово');
   poll();
 }
@@ -432,12 +453,9 @@ $('historyModal').addEventListener('click', (e) => {
   if (e.target.id === 'historyModal') $('historyModal').classList.add('hidden');
 });
 $('randomBtn').addEventListener('click', async () => {
-  const channelId = $('channel').value;
-  if (!channelId) {
-    toast('Сначала выбери голосовой канал');
-    return;
-  }
-  const res = await api.random(channelId);
+  const g = requireChannel();
+  if (!g.ok) return;
+  const res = await api.random(g.channelId);
   toast(res.message || 'Готово');
   poll();
 });
@@ -597,13 +615,10 @@ function renderYtSubtracks(container, videos) {
 }
 
 async function ytPlay(item, position) {
-  const channelId = $('channel').value;
-  if (!channelId) {
-    toast('Сначала выбери голосовой канал');
-    return;
-  }
+  const g = requireChannel();
+  if (!g.ok) return;
   const res = await api.ytPlay({
-    channelId,
+    channelId: g.channelId,
     videoId: item.id,
     title: item.title,
     channel: item.channel,
@@ -615,12 +630,9 @@ async function ytPlay(item, position) {
 }
 
 async function ytPlayPlaylist(url, position) {
-  const channelId = $('channel').value;
-  if (!channelId) {
-    toast('Сначала выбери голосовой канал');
-    return;
-  }
-  const res = await api.ytPlay({ channelId, playlistUrl: url, position });
+  const g = requireChannel();
+  if (!g.ok) return;
+  const res = await api.ytPlay({ channelId: g.channelId, playlistUrl: url, position });
   toast(res.message || 'Готово');
   poll();
 }
@@ -753,13 +765,10 @@ function renderYaSubtracks(container, tracks) {
 }
 
 async function yaPlay(item, position) {
-  const channelId = $('channel').value;
-  if (!channelId) {
-    toast('Сначала выбери голосовой канал');
-    return;
-  }
+  const g = requireChannel();
+  if (!g.ok) return;
   const res = await api.yaPlay({
-    channelId,
+    channelId: g.channelId,
     id: item.id,
     type: item.type,
     title: item.name,
@@ -773,13 +782,10 @@ async function yaPlay(item, position) {
 }
 
 async function yaPlayTrack(t, position) {
-  const channelId = $('channel').value;
-  if (!channelId) {
-    toast('Сначала выбери голосовой канал');
-    return;
-  }
+  const g = requireChannel();
+  if (!g.ok) return;
   const res = await api.yaPlay({
-    channelId,
+    channelId: g.channelId,
     id: t.id,
     type: 'track',
     title: t.title,
@@ -922,13 +928,10 @@ function renderVkSubtracks(container, tracks) {
 }
 
 async function vkPlay(item, position) {
-  const channelId = $('channel').value;
-  if (!channelId) {
-    toast('Сначала выбери голосовой канал');
-    return;
-  }
+  const g = requireChannel();
+  if (!g.ok) return;
   const res = await api.vkPlay({
-    channelId,
+    channelId: g.channelId,
     id: item.id,
     type: item.type,
     title: item.name,
@@ -942,13 +945,10 @@ async function vkPlay(item, position) {
 }
 
 async function vkPlayTrack(t, position) {
-  const channelId = $('channel').value;
-  if (!channelId) {
-    toast('Сначала выбери голосовой канал');
-    return;
-  }
+  const g = requireChannel();
+  if (!g.ok) return;
   const res = await api.vkPlay({
-    channelId,
+    channelId: g.channelId,
     id: t.id,
     type: 'track',
     title: t.title,
@@ -972,8 +972,9 @@ $('vkType').addEventListener('change', () => {
 
 // ── Каналы ──────────────────────────────────────────────────────────────────
 async function refreshChannels() {
-  const channels = await api.channels();
   const sel = $('channel');
+  if (!sel) return;
+  const channels = await api.channels();
   const prev = sel.value;
   sel.innerHTML = '';
   if (!channels.length) {
@@ -1117,12 +1118,9 @@ function renderSubtracks(container, tracks) {
 }
 
 async function playTrack(trackId, position) {
-  const channelId = $('channel').value;
-  if (!channelId) {
-    toast('Сначала выбери голосовой канал');
-    return;
-  }
-  const res = await api.play({ channelId, query: trackId, type: 'track', position });
+  const g = requireChannel();
+  if (!g.ok) return;
+  const res = await api.play({ channelId: g.channelId, query: trackId, type: 'track', position });
   toast(res.message || 'Готово');
   poll();
 }
@@ -1133,13 +1131,10 @@ $('results').addEventListener('scroll', () => {
   if (ul.scrollTop + ul.clientHeight >= ul.scrollHeight - 80) doSearch(false);
 });
 async function play(item, position = 'end') {
-  const channelId = $('channel').value;
-  if (!channelId) {
-    toast('Сначала выбери голосовой канал');
-    return;
-  }
+  const g = requireChannel();
+  if (!g.ok) return;
   try {
-    const res = await api.play({ channelId, query: item.id, type: item.type, position });
+    const res = await api.play({ channelId: g.channelId, query: item.id, type: item.type, position });
     toast(res.message || 'Готово');
     poll();
   } catch {
@@ -1155,11 +1150,22 @@ let channelDefaulted = false; // применили ли запомненный 
 
 function renderState(s) {
   if (!s) return;
-  $('status').textContent = s.connected ? 'в голосовом канале' : s.ready ? 'готов' : 'подключение…';
+  $('status').textContent = CHANNEL_MODE
+    ? s.connected
+      ? 'в голосовом канале'
+      : s.ready
+        ? 'готов'
+        : 'подключение…'
+    : s.nowPlaying
+      ? s.paused
+        ? 'на паузе'
+        : 'воспроизведение'
+      : 'готово';
 
-  // Иконка play/pause: «pause» когда реально играет, иначе «play_arrow».
+  // Иконка play/pause (кнопка в Discord-режиме) / состояние чекбокса (режим браузера).
   const pauseIcon = $('pause').querySelector('.material-icons');
   if (pauseIcon) pauseIcon.textContent = s.nowPlaying && !s.paused ? 'pause' : 'play_arrow';
+  if ($('pause').type === 'checkbox') $('pause').checked = !s.paused;
 
   // Предвыбор запомненного канала — один раз, пока пользователь сам не выбрал.
   if (!channelDefaulted && s.lastChannelId) {
@@ -1229,6 +1235,8 @@ function renderState(s) {
     lastQueueKey = qkey;
     renderQueue(s.queue);
   }
+
+  if (!CHANNEL_MODE) updateBrowserAudio(s);
 }
 
 let dragFrom = null;
@@ -1334,13 +1342,13 @@ $('stop').addEventListener('click', async () => {
   await api.control('stop');
   poll();
 });
-$('leave').addEventListener('click', async () => {
+$('leave')?.addEventListener('click', async () => {
   await api.control('leave');
   poll();
 });
-$('refreshChannels').addEventListener('click', refreshChannels);
+$('refreshChannels')?.addEventListener('click', refreshChannels);
 // Пользователь сам выбрал канал → больше не перебиваем запомненным + сразу заходим туда.
-$('channel').addEventListener('change', async () => {
+$('channel')?.addEventListener('change', async () => {
   channelDefaulted = true;
   const channelId = $('channel').value;
   if (!channelId) return;
@@ -1348,6 +1356,40 @@ $('channel').addEventListener('change', async () => {
   toast(res.message || 'Подключаюсь…');
   poll();
 });
+
+// ── Режим «в браузере»: реальное аудио в <audio>, управляемое чекбоксом ──────────
+// Клик по чекбоксу — тот самый пользовательский жест, без которого браузер не даст
+// стартовать .play(); поэтому дёргаем audio.play()/pause() прямо тут, а не в poll().
+if (!CHANNEL_MODE) {
+  $('pause').addEventListener('click', () => {
+    const audio = $('browserAudio');
+    if (!audio) return;
+    if ($('pause').checked) audio.play().catch(() => {});
+    else audio.pause();
+  });
+}
+
+let lastBrowserPlayId = null;
+function updateBrowserAudio(s) {
+  const audio = $('browserAudio');
+  if (!audio) return;
+  const playId = s.nowPlaying && s.nowPlaying.playId;
+  if (!playId) {
+    if (lastBrowserPlayId !== null) {
+      lastBrowserPlayId = null;
+      audio.pause();
+      audio.removeAttribute('src');
+      audio.load();
+    }
+    return;
+  }
+  if (playId !== lastBrowserPlayId) {
+    lastBrowserPlayId = playId;
+    audio.src = `/api/browser/stream?play=${encodeURIComponent(playId)}`;
+    if (!s.paused) audio.play().catch(() => {});
+  }
+}
+
 $('search').addEventListener('input', onSearchInput);
 $('type').addEventListener('change', () => doSearch(true));
 

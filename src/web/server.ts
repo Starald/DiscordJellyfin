@@ -650,6 +650,208 @@ export function startWebPanel(bot: Bot, config: AppConfig): void {
     }
   });
 
+  // ── Режим «Проигрывание в браузере» ──────────────────────────────────────────
+  // Поиск (/api/search, /api/yt/search, /api/ya/search, /api/vk/search, /api/tracks,
+  // /api/history) общий для обоих режимов — каналу не принадлежит, дублировать незачем.
+  app.get('/api/browser/state', requireAuth, (_req, res) => {
+    res.json(bot.browserGetState());
+  });
+
+  app.post('/api/browser/play', requireAuth, async (req, res) => {
+    const body = (req.body ?? {}) as { query?: unknown; type?: unknown; position?: unknown };
+    const type = VALID_TYPES.includes(body.type as SearchType) ? (body.type as SearchType) : 'album';
+    const position = body.position === 'next' ? 'next' : 'end';
+    if (!body.query) {
+      res.status(400).json({ ok: false, message: 'Нужен query.' });
+      return;
+    }
+    try {
+      res.json(await bot.browserPlay({ query: String(body.query), type, position }));
+    } catch {
+      res.status(500).json({ ok: false, message: 'Ошибка воспроизведения.' });
+    }
+  });
+
+  app.post('/api/browser/random', requireAuth, async (req, res) => {
+    const body = (req.body ?? {}) as { position?: unknown };
+    const position = body.position === 'next' ? 'next' : 'end';
+    try {
+      res.json(await bot.browserPlayRandom({ position }));
+    } catch {
+      res.status(500).json({ ok: false, message: 'Ошибка.' });
+    }
+  });
+
+  app.post('/api/browser/yt/play', requireAuth, async (req, res) => {
+    const body = (req.body ?? {}) as {
+      videoId?: unknown;
+      playlistUrl?: unknown;
+      title?: unknown;
+      channel?: unknown;
+      durationMs?: unknown;
+      position?: unknown;
+    };
+    const position = body.position === 'next' ? 'next' : 'end';
+    try {
+      if (typeof body.playlistUrl === 'string' && body.playlistUrl) {
+        res.json(await bot.browserPlayYouTubePlaylist({ url: body.playlistUrl, position }));
+        return;
+      }
+      if (!body.videoId) {
+        res.status(400).json({ ok: false, message: 'Нужны videoId или playlistUrl.' });
+        return;
+      }
+      res.json(
+        await bot.browserPlayYouTube({
+          videoId: String(body.videoId),
+          title: typeof body.title === 'string' ? body.title : undefined,
+          channel: typeof body.channel === 'string' ? body.channel : undefined,
+          durationMs: typeof body.durationMs === 'number' ? body.durationMs : undefined,
+          position,
+        }),
+      );
+    } catch {
+      res.status(500).json({ ok: false, message: 'Ошибка.' });
+    }
+  });
+
+  app.post('/api/browser/ya/play', requireAuth, async (req, res) => {
+    const b = (req.body ?? {}) as {
+      id?: unknown;
+      type?: unknown;
+      title?: unknown;
+      artist?: unknown;
+      durationMs?: unknown;
+      coverUrl?: unknown;
+      position?: unknown;
+    };
+    if (!b.id) {
+      res.status(400).json({ ok: false, message: 'Нужен id.' });
+      return;
+    }
+    try {
+      res.json(
+        await bot.browserPlayYandex({
+          id: String(b.id),
+          type: yaType(b.type),
+          title: typeof b.title === 'string' ? b.title : undefined,
+          artist: typeof b.artist === 'string' ? b.artist : undefined,
+          durationMs: typeof b.durationMs === 'number' ? b.durationMs : undefined,
+          coverUrl: typeof b.coverUrl === 'string' ? b.coverUrl : undefined,
+          position: b.position === 'next' ? 'next' : 'end',
+        }),
+      );
+    } catch {
+      res.status(500).json({ ok: false, message: 'Ошибка.' });
+    }
+  });
+
+  app.post('/api/browser/vk/play', requireAuth, async (req, res) => {
+    const b = (req.body ?? {}) as {
+      id?: unknown;
+      type?: unknown;
+      title?: unknown;
+      artist?: unknown;
+      durationMs?: unknown;
+      coverUrl?: unknown;
+      position?: unknown;
+    };
+    if (!b.id) {
+      res.status(400).json({ ok: false, message: 'Нужен id.' });
+      return;
+    }
+    try {
+      res.json(
+        await bot.browserPlayVk({
+          id: String(b.id),
+          type: vkType(b.type),
+          title: typeof b.title === 'string' ? b.title : undefined,
+          artist: typeof b.artist === 'string' ? b.artist : undefined,
+          durationMs: typeof b.durationMs === 'number' ? b.durationMs : undefined,
+          coverUrl: typeof b.coverUrl === 'string' ? b.coverUrl : undefined,
+          position: b.position === 'next' ? 'next' : 'end',
+        }),
+      );
+    } catch {
+      res.status(500).json({ ok: false, message: 'Ошибка.' });
+    }
+  });
+
+  app.post('/api/browser/history/play', requireAuth, async (req, res) => {
+    const body = (req.body ?? {}) as { id?: unknown; position?: unknown };
+    const position = body.position === 'next' ? 'next' : 'end';
+    if (!body.id) {
+      res.status(400).json({ ok: false, message: 'Нужен id.' });
+      return;
+    }
+    try {
+      res.json(await bot.browserPlayFromHistory(String(body.id), position));
+    } catch {
+      res.status(500).json({ ok: false, message: 'Ошибка.' });
+    }
+  });
+
+  app.post('/api/browser/queue/remove', requireAuth, (req, res) => {
+    const index = Number((req.body as { index?: unknown })?.index);
+    if (!Number.isInteger(index) || index < 0) {
+      res.status(400).json({ ok: false });
+      return;
+    }
+    res.json({ ok: bot.browserRemoveFromQueue(index) });
+  });
+
+  app.post('/api/browser/queue/move', requireAuth, (req, res) => {
+    const body = (req.body ?? {}) as { from?: unknown; to?: unknown };
+    const from = Number(body.from);
+    const to = Number(body.to);
+    if (!Number.isInteger(from) || !Number.isInteger(to)) {
+      res.status(400).json({ ok: false });
+      return;
+    }
+    res.json({ ok: bot.browserMoveInQueue(from, to) });
+  });
+
+  app.post('/api/browser/seek', requireAuth, (req, res) => {
+    const body = (req.body ?? {}) as { positionMs?: unknown };
+    const positionMs = Number(body.positionMs);
+    if (!Number.isFinite(positionMs) || positionMs < 0) {
+      res.status(400).json({ ok: false });
+      return;
+    }
+    res.json({ ok: bot.browserSeek(positionMs) });
+  });
+
+  app.post('/api/browser/control/:action', requireAuth, (req, res) => {
+    switch (req.params.action) {
+      case 'pause':
+        res.json({ paused: bot.browserTogglePlaying() });
+        return;
+      case 'skip':
+        res.json({ ok: bot.browserSkip() });
+        return;
+      case 'stop':
+        bot.browserStop();
+        res.json({ ok: true });
+        return;
+      case 'shuffle':
+        res.json({ count: bot.browserShuffle() });
+        return;
+      default:
+        res.status(404).json({ error: 'unknown_action' });
+    }
+  });
+
+  // Живой MP3-стрим текущего трека браузерного плеера. requireAuth — та же сессия,
+  // что и у остального API (иначе поток слушал бы кто угодно по прямой ссылке).
+  app.get('/api/browser/stream', requireAuth, (req, res) => {
+    const playId = String(req.query.play ?? '');
+    if (!playId || !bot.browserAttachStream(res, playId)) {
+      res.status(404).end();
+    }
+    // На успехе заголовки/подписку на fan-out уже сделал browserAttachStream — ответ
+    // держим открытым, res.end() вызовет BrowserPlayer при остановке/смене трека.
+  });
+
   // ── Прокси обложек (ключ Jellyfin остаётся на сервере) ───────────────────────
   app.get('/art/:id', requireAuth, async (req, res) => {
     const tag = typeof req.query.tag === 'string' ? req.query.tag : undefined;

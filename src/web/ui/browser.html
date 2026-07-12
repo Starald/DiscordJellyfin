@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Jellyfin Discord Bot</title>
+    <title>Jellyfin Discord Bot — в браузере</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
@@ -20,10 +20,12 @@
     <!-- Панель -->
     <div id="app" class="hidden">
       <header>
-        <div class="brand">JellyfinDS</div>
+        <div class="brand">
+          JellyfinDS <span class="mode-badge">браузер</span>
+        </div>
         <div class="head-right">
           <span id="status" class="status">…</span>
-          <button id="browserModeBtn" class="icon" title="Открыть проигрывание прямо в браузере, без Discord">Проигрывание в браузере</button>
+          <button id="backToPanelBtn" class="icon" title="Обычная панель (Discord)">Панель</button>
           <button id="jellyfinLink" class="icon" title="Перейти на Jellyfin">Jellyfin</button>
           <button id="historyBtn" class="icon" title="История прослушиваний">История</button>
           <button id="adminBtn" class="icon" title="Администрирование (сертификат, логи)">Администрирование</button>
@@ -33,12 +35,6 @@
 
       <main>
         <section class="left">
-          <div class="row channel-row">
-            <label for="channel">Канал</label>
-            <select id="channel"></select>
-            <button id="refreshChannels" class="icon" title="Обновить список каналов">⟳</button>
-          </div>
-
           <div class="tabs">
             <button class="tab active" data-tab="jellyfin">Jellyfin</button>
             <button class="tab" data-tab="youtube">YouTube</button>
@@ -99,10 +95,14 @@
           <div id="nowplaying" class="nowplaying">
             <div class="np-empty">Ничего не играет</div>
           </div>
+
+          <label class="playing-toggle" title="Пока выключено — треки только копятся в очереди">
+            <input id="pause" type="checkbox" />
+            <span>Воспроизводить музыку</span>
+          </label>
+          <audio id="browserAudio" preload="none"></audio>
+
           <div class="controls">
-            <button id="pause" title="Пауза / продолжить">
-              <span class="material-icons">play_arrow</span>
-            </button>
             <button id="skip" title="Следующий">
               <span class="material-icons">skip_next</span>
             </button>
@@ -111,9 +111,6 @@
             </button>
             <button id="stop" title="Стоп и очистить">
               <span class="material-icons">stop</span>
-            </button>
-            <button id="leave" title="Покинуть канал">
-              <span class="material-icons">logout</span>
             </button>
           </div>
           <h3>Очередь</h3>

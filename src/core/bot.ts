@@ -1,4 +1,5 @@
 import { generateDependencyReport } from '@discordjs/voice';
+import type { ServerResponse } from 'node:http';
 import {
   Client,
   Events,
@@ -10,6 +11,7 @@ import {
 } from 'discord.js';
 import { PlayerManager } from '../audio/manager.js';
 import type { HistoryItem } from '../audio/player.js';
+import { BrowserPlayer } from '../audio/browserPlayer.js';
 import { resolveSelection, typeToItemTypes, type SearchType } from '../audio/resolve.js';
 import { itemToTrack, type Track } from '../audio/track.js';
 import { ticksToMs } from '../util/format.js';
@@ -81,6 +83,33 @@ export interface BotState {
   }[];
 }
 
+/** Состояние браузерного плеера — аналог BotState, но без голосового канала. */
+export interface BrowserBotState {
+  ready: boolean;
+  paused: boolean;
+  nowPlaying: {
+    title: string;
+    artist: string;
+    album?: string;
+    imageUrl?: string;
+    artId?: string;
+    thumb?: string;
+    durationMs: number;
+    playbackMs: number;
+    buffering: boolean;
+    source?: 'jellyfin' | 'youtube' | 'yandex' | 'vk';
+    /** Id текущего прогона стрима — клиент триггерит новый <audio src> при смене. */
+    playId: string;
+  } | null;
+  queue: {
+    title: string;
+    artist: string;
+    durationMs: number;
+    source?: 'jellyfin' | 'youtube' | 'yandex' | 'vk';
+    prefetch?: 'loading' | 'ready' | 'error';
+  }[];
+}
+
 export interface HistoryEntry {
   id: string;
   title: string;
@@ -110,6 +139,8 @@ export class Bot {
   readonly youtube: YouTube;
   readonly yandex: YandexMusic;
   readonly vk: Vk;
+  /** Независимый от Discord плеер для режима «Проигрывание в браузере» (см. web/server.ts). */
+  private readonly browserPlayer: BrowserPlayer;
   private started = false;
   private ready = false;
   /** Последний голосовой канал (запоминается между запусками). */
@@ -135,6 +166,7 @@ export class Bot {
     );
     this.yandex = new YandexMusic(this.config.yandex.token ?? '', this.config.yandex.proxy);
     this.vk = new Vk(this.config.vk.token ?? '', this.config.vk.userAgent, this.config.vk.proxy);
+    this.browserPlayer = new BrowserPlayer();
     this.client = new Client({
       intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
     });
@@ -158,6 +190,7 @@ export class Bot {
 
   async shutdown(): Promise<void> {
     this.players.get(this.guildId)?.leave();
+    this.browserPlayer.destroy();
     await this.client.destroy();
     this.started = false;
     this.ready = false;
@@ -742,6 +775,267 @@ export class Bot {
     }
     // Jellyfin: прямой стрим по id (свежий URL с api_key — на диск он не сохранялся).
     return { ...base, streamUrl: this.jellyfin.getStreamUrl(item.id) };
+  }
+
+  // ── Режим «Проигрывание в браузере» ──────────────────────────────────────────
+  // Та же логика построения Track, что и в play*/выше, но вместо connectAndEnqueue (Discord
+  // voice) — независимая очередь browserPlayer, стримящая MP3 по HTTP (см. web/server.ts).
+  // Поиск/resolve/tracks-эндпоинты общие для обоих режимов — им дублирование не нужно.
+
+  async browserPlay(opts: {
+    query: string;
+    type: SearchType;
+    position?: 'end' | 'next';
+  }): Promise<PlayResult> {
+    const resolved = await resolveSelection(this.jellyfin, opts.query, opts.type);
+    if (!resolved || resolved.tracks.length === 0) {
+      return { ok: false, message: 'По запросу ничего не нашёл.' };
+    }
+    const tracks = resolved.tracks.map((it) => itemToTrack(it, this.jellyfin));
+    this.browserPlayer.enqueue(tracks, opts.position ?? 'end');
+    return {
+      ok: true,
+      message: `В очередь браузера: ${resolved.item.Name}`,
+      enqueued: tracks.length,
+    };
+  }
+
+  async browserPlayRandom(opts: { position?: 'end' | 'next' }): Promise<PlayResult> {
+    const items = await this.jellyfin.getRandomTracks(1);
+    if (items.length === 0) return { ok: false, message: 'Не удалось найти случайный трек.' };
+    const tracks = items.map((it) => itemToTrack(it, this.jellyfin));
+    this.browserPlayer.enqueue(tracks, opts.position ?? 'end');
+    return { ok: true, message: 'Случайный трек — в очередь браузера.', enqueued: tracks.length };
+  }
+
+  async browserPlayYouTube(opts: {
+    videoId: string;
+    title?: string;
+    channel?: string;
+    durationMs?: number;
+    position?: 'end' | 'next';
+  }): Promise<PlayResult> {
+    const id = opts.videoId;
+    const track: Track = {
+      id: `yt-${id}`,
+      title: opts.title ?? id,
+      artist: opts.channel ?? 'YouTube',
+      durationMs: opts.durationMs ?? 0,
+      streamUrl: '',
+      thumbUrl: `/yt/thumb/${id}`,
+      resolve: () => this.youtube.getAudioUrl(id),
+      source: 'youtube',
+      proxy: this.config.youtube.proxy,
+    };
+    this.browserPlayer.enqueue([track], opts.position ?? 'end');
+    return { ok: true, message: `В очередь браузера: ${track.title}`, enqueued: 1 };
+  }
+
+  async browserPlayYouTubePlaylist(opts: {
+    url: string;
+    position?: 'end' | 'next';
+  }): Promise<PlayResult> {
+    const videos = await this.ytPlaylistVideos(opts.url);
+    if (videos.length === 0) return { ok: false, message: 'В плейлисте нет видео.' };
+    const tracks: Track[] = videos.map((v) => ({
+      id: `yt-${v.id}`,
+      title: v.title,
+      artist: v.channel ?? 'YouTube',
+      durationMs: v.durationMs,
+      streamUrl: '',
+      thumbUrl: `/yt/thumb/${v.id}`,
+      resolve: () => this.youtube.getAudioUrl(v.id),
+      source: 'youtube',
+      proxy: this.config.youtube.proxy,
+    }));
+    this.browserPlayer.enqueue(tracks, opts.position ?? 'end');
+    return {
+      ok: true,
+      message: `плейлист (${tracks.length}) — в очередь браузера`,
+      enqueued: tracks.length,
+    };
+  }
+
+  async browserPlayYandex(opts: {
+    id: string;
+    type: YmType;
+    title?: string;
+    artist?: string;
+    durationMs?: number;
+    coverUrl?: string;
+    position?: 'end' | 'next';
+  }): Promise<PlayResult> {
+    if (!this.yandex.enabled) {
+      return { ok: false, message: 'Яндекс.Музыка не настроена (нет токена).' };
+    }
+    let ymTracks: YmTrack[];
+    let label: string;
+    if (opts.type === 'track') {
+      let t: YmTrack = {
+        id: opts.id,
+        title: opts.title ?? '',
+        artist: opts.artist ?? '',
+        durationMs: opts.durationMs ?? 0,
+        coverUrl: opts.coverUrl,
+      };
+      if (!t.title) {
+        const fetched = await this.yandex.getTrack(opts.id);
+        if (fetched) t = fetched;
+      }
+      ymTracks = [t];
+      label = t.title || 'трек';
+    } else if (opts.type === 'album') {
+      ymTracks = await this.yandex.getAlbumTracks(opts.id);
+      label = opts.title ?? 'альбом';
+    } else if (opts.type === 'artist') {
+      ymTracks = await this.yandex.getArtistTracks(opts.id);
+      label = opts.title ?? 'исполнитель';
+    } else {
+      ymTracks = await this.yandex.getPlaylistTracks(opts.id);
+      label = opts.title ?? 'плейлист';
+    }
+    if (ymTracks.length === 0) {
+      return { ok: false, message: 'Не нашёл треков (для стрима нужна подписка Плюс?).' };
+    }
+    const tracks: Track[] = ymTracks.map((t) => ({
+      id: `ym-${t.id}`,
+      title: t.title,
+      artist: t.artist,
+      durationMs: t.durationMs,
+      streamUrl: '',
+      thumbUrl: t.coverUrl,
+      resolve: () => this.yandex.getStreamUrl(t.id),
+      source: 'yandex',
+      proxy: this.config.yandex.proxy,
+    }));
+    this.browserPlayer.enqueue(tracks, opts.position ?? 'end');
+    return { ok: true, message: `${label} — в очередь браузера`, enqueued: tracks.length };
+  }
+
+  async browserPlayVk(opts: {
+    id: string;
+    type: VkType;
+    title?: string;
+    artist?: string;
+    durationMs?: number;
+    coverUrl?: string;
+    position?: 'end' | 'next';
+  }): Promise<PlayResult> {
+    if (!this.vk.enabled) {
+      return { ok: false, message: 'ВКонтакте не настроен (нет токена).' };
+    }
+    let vkTracks: VkTrack[];
+    let label: string;
+    if (opts.type === 'track') {
+      let t: VkTrack = {
+        id: opts.id,
+        title: opts.title ?? '',
+        artist: opts.artist ?? '',
+        durationMs: opts.durationMs ?? 0,
+        coverUrl: opts.coverUrl,
+      };
+      if (!t.title) {
+        const fetched = (await this.vk.getByIds([opts.id]))[0];
+        if (fetched) t = fetched;
+      }
+      vkTracks = [t];
+      label = t.title || 'трек';
+    } else {
+      vkTracks = await this.vk.getPlaylistTracks(opts.id);
+      label = opts.title ?? 'плейлист';
+    }
+    if (vkTracks.length === 0) {
+      return { ok: false, message: 'Не нашёл треков ВКонтакте (недоступны в регионе?).' };
+    }
+    const tracks: Track[] = vkTracks.map((t) => ({
+      id: `vk-${t.id}`,
+      title: t.title,
+      artist: t.artist,
+      durationMs: t.durationMs,
+      streamUrl: '',
+      thumbUrl: t.coverUrl,
+      resolve: () => this.vk.getStreamUrl(t.id),
+      source: 'vk',
+      proxy: this.config.vk.proxy,
+    }));
+    this.browserPlayer.enqueue(tracks, opts.position ?? 'end');
+    return { ok: true, message: `${label} — в очередь браузера`, enqueued: tracks.length };
+  }
+
+  /** Повторно добавить трек из истории в очередь браузера. */
+  async browserPlayFromHistory(id: string, position: 'end' | 'next' = 'end'): Promise<PlayResult> {
+    const item = this.getRecentHistory().find((t) => t.id === id);
+    if (!item) return { ok: false, message: 'Трек не найден в истории.' };
+    const track = this.historyItemToTrack(item);
+    this.browserPlayer.enqueue([track], position);
+    return { ok: true, message: `${track.title} — в очередь браузера`, enqueued: 1 };
+  }
+
+  // ── Управление браузерным плеером ────────────────────────────────────────────
+
+  /** Переключить флажок «воспроизводить музыку». */
+  browserTogglePlaying(): boolean {
+    return this.browserPlayer.togglePlaying();
+  }
+
+  browserSkip(): boolean {
+    return this.browserPlayer.skip();
+  }
+
+  browserSeek(positionMs: number): boolean {
+    return this.browserPlayer.seek(positionMs);
+  }
+
+  browserStop(): void {
+    this.browserPlayer.stop();
+  }
+
+  browserShuffle(): number {
+    return this.browserPlayer.shuffle();
+  }
+
+  browserRemoveFromQueue(index: number): boolean {
+    return !!this.browserPlayer.removeAt(index);
+  }
+
+  browserMoveInQueue(from: number, to: number): boolean {
+    return this.browserPlayer.moveTrack(from, to);
+  }
+
+  browserGetState(): BrowserBotState {
+    const np = this.browserPlayer.getNowPlaying();
+    const snapshot = this.browserPlayer.getSnapshot();
+    return {
+      ready: true,
+      paused: np?.paused ?? this.browserPlayer.isPaused,
+      nowPlaying: np
+        ? {
+            title: np.track.title,
+            artist: np.track.artist,
+            album: np.track.album,
+            imageUrl: np.track.imageUrl,
+            artId: np.track.source === 'jellyfin' ? (np.track.albumId ?? np.track.id) : undefined,
+            thumb: np.track.thumbUrl,
+            durationMs: np.track.durationMs,
+            playbackMs: np.playbackMs,
+            buffering: np.buffering,
+            source: np.track.source,
+            playId: np.playId,
+          }
+        : null,
+      queue: snapshot.upcoming.map((t) => ({
+        title: t.title,
+        artist: t.artist,
+        durationMs: t.durationMs,
+        source: t.source,
+        prefetch: t.prefetchState,
+      })),
+    };
+  }
+
+  /** Подписать HTTP-ответ на живой аудио-поток текущего прогона (см. GET /api/browser/stream). */
+  browserAttachStream(res: ServerResponse, playId: string): boolean {
+    return this.browserPlayer.attachListener(res, playId);
   }
 
   // ── Внутреннее ──────────────────────────────────────────────────────────────
