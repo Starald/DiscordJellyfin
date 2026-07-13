@@ -129,7 +129,7 @@ const KIND_FROM_JELLYFIN: Record<string, SearchType> = {
 
 /**
  * Единое ядро бота: Discord-клиент, Jellyfin, очереди + API, которым пользуются
- * и slash-команды (через useServices), и графический интерфейс (Electron).
+ * и slash-команды (через useServices), и веб-панель (web/server.ts).
  */
 export class Bot {
   readonly config: AppConfig;
