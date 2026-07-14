@@ -1,9 +1,11 @@
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import cookieSession from 'cookie-session';
 import express from 'express';
+import { ProxyAgent, type Dispatcher } from 'undici';
 import type { SearchType } from '../audio/resolve.js';
 import type { AppConfig } from '../config.js';
 import type { Bot } from '../core/bot.js';
@@ -18,6 +20,18 @@ const UI_DIR = path.join(dirname, 'ui');
 const VALID_TYPES: SearchType[] = ['album', 'artist', 'playlist', 'track'];
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_MAX_ATTEMPTS = 10;
+
+/** Кэш ProxyAgent по строке прокси — чтобы не плодить агент на каждый запрос стрима. */
+const streamProxyAgents = new Map<string, ProxyAgent>();
+function streamDispatcher(proxy?: string): Dispatcher | undefined {
+  if (!proxy) return undefined;
+  let agent = streamProxyAgents.get(proxy);
+  if (!agent) {
+    agent = new ProxyAgent(proxy);
+    streamProxyAgents.set(proxy, agent);
+  }
+  return agent;
+}
 
 /** Сравнение строк за постоянное время (через sha256, чтобы не утекала длина). */
 function safeEqual(a: string, b: string): boolean {
@@ -811,21 +825,8 @@ export function startWebPanel(bot: Bot, config: AppConfig): void {
     res.json({ ok: bot.browserMoveInQueue(from, to) });
   });
 
-  app.post('/api/browser/seek', requireAuth, (req, res) => {
-    const body = (req.body ?? {}) as { positionMs?: unknown };
-    const positionMs = Number(body.positionMs);
-    if (!Number.isFinite(positionMs) || positionMs < 0) {
-      res.status(400).json({ ok: false });
-      return;
-    }
-    res.json({ ok: bot.browserSeek(positionMs) });
-  });
-
   app.post('/api/browser/control/:action', requireAuth, (req, res) => {
     switch (req.params.action) {
-      case 'pause':
-        res.json({ paused: bot.browserTogglePlaying() });
-        return;
       case 'skip':
         res.json({ ok: bot.browserSkip() });
         return;
@@ -841,15 +842,83 @@ export function startWebPanel(bot: Bot, config: AppConfig): void {
     }
   });
 
-  // Живой MP3-стрим текущего трека браузерного плеера. requireAuth — та же сессия,
-  // что и у остального API (иначе поток слушал бы кто угодно по прямой ссылке).
-  app.get('/api/browser/stream', requireAuth, (req, res) => {
-    const playId = String(req.query.play ?? '');
-    if (!playId || !bot.browserAttachStream(res, playId)) {
+  // Range-прокси оригинального потока текущего трека браузерного плеера: сервер тянет
+  // upstream (Jellyfin static / VK / Яндекс / YouTube — при необходимости через прокси,
+  // привязанный к exit-IP сервера) и переливает байты в браузер КАК ЕСТЬ, без FFmpeg.
+  // Заголовок Range пробрасывается в обе стороны → нативные пауза/перемотка в <audio>.
+  // requireAuth — та же сессия, что и у остального API (api_key Jellyfin клиенту не утекает).
+  app.get('/api/browser/stream', requireAuth, async (req, res) => {
+    const token = String(req.query.token ?? '');
+    const target = token ? bot.browserGetStreamTarget(token) : null;
+    if (!target) {
       res.status(404).end();
+      return;
     }
-    // На успехе заголовки/подписку на fan-out уже сделал browserAttachStream — ответ
-    // держим открытым, res.end() вызовет BrowserPlayer при остановке/смене трека.
+
+    // Клиент оборвал соединение (перемотка → новый запрос / закрыл вкладку) — гасим upstream.
+    const controller = new AbortController();
+    res.on('close', () => controller.abort());
+
+    const headers: Record<string, string> = { 'Accept-Encoding': 'identity' };
+    if (typeof req.headers.range === 'string') headers['Range'] = req.headers.range;
+    // Нейтральный десктопный UA: часть CDN (googlevideo) капризничает к «пустому» клиенту.
+    headers['User-Agent'] =
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+      '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+
+    let upstream: Awaited<ReturnType<typeof fetch>>;
+    try {
+      upstream = await fetch(target.url, {
+        headers,
+        signal: controller.signal,
+        dispatcher: streamDispatcher(target.proxy),
+      } as RequestInit & { dispatcher?: Dispatcher });
+    } catch (err) {
+      if (controller.signal.aborted) return; // клиент сам ушёл — это не ошибка
+      logger.warn(
+        `[browser] Стрим-прокси: upstream недоступен: ${err instanceof Error ? err.message : err}`,
+      );
+      if (!res.headersSent) res.status(502).end();
+      else res.end();
+      return;
+    }
+
+    // Релеим статус (200/206/416) и заголовки диапазона/типа как есть.
+    res.status(upstream.status);
+    for (const h of [
+      'content-type',
+      'content-length',
+      'content-range',
+      'accept-ranges',
+      'content-disposition',
+    ]) {
+      const v = upstream.headers.get(h);
+      if (v) res.setHeader(h, v);
+    }
+    if (!upstream.headers.get('accept-ranges')) res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Cache-Control', 'no-store');
+
+    if (!upstream.body) {
+      res.end();
+      return;
+    }
+    const nodeStream = Readable.fromWeb(
+      upstream.body as import('node:stream/web').ReadableStream<Uint8Array>,
+    );
+    nodeStream.on('error', () => {
+      try {
+        res.destroy();
+      } catch {
+        /* ignore */
+      }
+    });
+    nodeStream.pipe(res);
+  });
+
+  // Клиент сообщает, что <audio> доиграл трек с этим токеном → продвигаем очередь.
+  app.post('/api/browser/ended', requireAuth, (req, res) => {
+    const token = String((req.body as { token?: unknown })?.token ?? '');
+    res.json({ ok: token ? bot.browserReportEnded(token) : false });
   });
 
   // ── Прокси обложек (ключ Jellyfin остаётся на сервере) ───────────────────────

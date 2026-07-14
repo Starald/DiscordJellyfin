@@ -1,5 +1,4 @@
 import { generateDependencyReport } from '@discordjs/voice';
-import type { ServerResponse } from 'node:http';
 import {
   Client,
   Events,
@@ -11,7 +10,7 @@ import {
 } from 'discord.js';
 import { PlayerManager } from '../audio/manager.js';
 import type { HistoryItem } from '../audio/player.js';
-import { BrowserPlayer } from '../audio/browserPlayer.js';
+import { BrowserPlayer, type BrowserStreamTarget } from '../audio/browserPlayer.js';
 import { resolveSelection, typeToItemTypes, type SearchType } from '../audio/resolve.js';
 import { itemToTrack, type Track } from '../audio/track.js';
 import { ticksToMs } from '../util/format.js';
@@ -86,7 +85,6 @@ export interface BotState {
 /** Состояние браузерного плеера — аналог BotState, но без голосового канала. */
 export interface BrowserBotState {
   ready: boolean;
-  paused: boolean;
   nowPlaying: {
     title: string;
     artist: string;
@@ -95,11 +93,10 @@ export interface BrowserBotState {
     artId?: string;
     thumb?: string;
     durationMs: number;
-    playbackMs: number;
     buffering: boolean;
     source?: 'jellyfin' | 'youtube' | 'yandex' | 'vk';
-    /** Id текущего прогона стрима — клиент триггерит новый <audio src> при смене. */
-    playId: string;
+    /** Токен текущего трека — клиент грузит новый <audio src> при смене; null пока идёт резолв. */
+    playToken: string | null;
   } | null;
   queue: {
     title: string;
@@ -997,17 +994,8 @@ export class Bot {
 
   // ── Управление браузерным плеером ────────────────────────────────────────────
 
-  /** Переключить флажок «воспроизводить музыку». */
-  browserTogglePlaying(): boolean {
-    return this.browserPlayer.togglePlaying();
-  }
-
   browserSkip(): boolean {
     return this.browserPlayer.skip();
-  }
-
-  browserSeek(positionMs: number): boolean {
-    return this.browserPlayer.seek(positionMs);
   }
 
   browserStop(): void {
@@ -1031,7 +1019,6 @@ export class Bot {
     const snapshot = this.browserPlayer.getSnapshot();
     return {
       ready: true,
-      paused: np?.paused ?? this.browserPlayer.isPaused,
       nowPlaying: np
         ? {
             title: np.track.title,
@@ -1041,10 +1028,9 @@ export class Bot {
             artId: np.track.source === 'jellyfin' ? (np.track.albumId ?? np.track.id) : undefined,
             thumb: np.track.thumbUrl,
             durationMs: np.track.durationMs,
-            playbackMs: np.playbackMs,
             buffering: np.buffering,
             source: np.track.source,
-            playId: np.playId,
+            playToken: np.playToken,
           }
         : null,
       queue: snapshot.upcoming.map((t) => ({
@@ -1057,9 +1043,14 @@ export class Bot {
     };
   }
 
-  /** Подписать HTTP-ответ на живой аудио-поток текущего прогона (см. GET /api/browser/stream). */
-  browserAttachStream(res: ServerResponse, playId: string): boolean {
-    return this.browserPlayer.attachListener(res, playId);
+  /** Цель проксирования оригинального потока текущего трека (см. GET /api/browser/stream). */
+  browserGetStreamTarget(token: string): BrowserStreamTarget | null {
+    return this.browserPlayer.getStreamTarget(token);
+  }
+
+  /** Клиент сообщил, что трек доиграл, → продвинуть очередь (см. POST /api/browser/ended). */
+  browserReportEnded(token: string): boolean {
+    return this.browserPlayer.reportEnded(token);
   }
 
   // ── Внутреннее ──────────────────────────────────────────────────────────────

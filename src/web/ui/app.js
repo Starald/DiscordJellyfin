@@ -1152,19 +1152,29 @@ let channelDefaulted = false; // применили ли запомненный 
 
 function renderState(s) {
   if (!s) return;
-  $('status').textContent = CHANNEL_MODE
-    ? s.connected
-      ? 'в голосовом канале'
-      : s.ready
-        ? 'готов'
-        : 'подключение…'
-    : s.nowPlaying
-      ? s.paused
-        ? 'на паузе'
-        : 'воспроизведение'
-      : 'готово';
 
-  // Иконка play/pause (общая кнопка — управляет паузой для всех окон).
+  if (CHANNEL_MODE) renderChannelState(s);
+  else browserAudio?.onState(s);
+
+  // Очередь — общая для обоих режимов; перерисовываем только при изменении
+  // (чтобы не мешать кликам по кнопкам).
+  const qkey =
+    s.queue.length + '|' + s.queue.map((t) => t.title + ':' + (t.prefetch || '')).join('|');
+  if (qkey !== lastQueueKey) {
+    lastQueueKey = qkey;
+    renderQueue(s.queue);
+  }
+}
+
+// Discord-режим: статус подключения + «сейчас играет» с серверной позицией/паузой.
+function renderChannelState(s) {
+  $('status').textContent = s.connected
+    ? 'в голосовом канале'
+    : s.ready
+      ? 'готов'
+      : 'подключение…';
+
+  // Иконка play/pause (общая кнопка — серверная пауза).
   const pauseIcon = $('pause').querySelector('.material-icons');
   if (pauseIcon) pauseIcon.textContent = s.nowPlaying && !s.paused ? 'pause' : 'play_arrow';
 
@@ -1228,16 +1238,6 @@ function renderState(s) {
       }
     }
   }
-
-  // Очередь перерисовываем только при изменении (чтобы не мешать кликам по кнопкам).
-  const qkey =
-    s.queue.length + '|' + s.queue.map((t) => t.title + ':' + (t.prefetch || '')).join('|');
-  if (qkey !== lastQueueKey) {
-    lastQueueKey = qkey;
-    renderQueue(s.queue);
-  }
-
-  if (!CHANNEL_MODE) updateBrowserAudio(s);
 }
 
 let dragFrom = null;
@@ -1326,11 +1326,13 @@ async function poll() {
 }
 
 // ── Кнопки управления ─────────────────────────────────────────────────────────
-$('pause').addEventListener('click', async () => {
+// #pause/#skip есть только в Discord-панели (index.html). В браузерном плеере их роль
+// играют локальные #plPlay (пауза в самом окне) и #plNext (общий skip) — см. ниже.
+$('pause')?.addEventListener('click', async () => {
   await api.control('pause');
   poll();
 });
-$('skip').addEventListener('click', async () => {
+$('skip')?.addEventListener('click', async () => {
   await api.control('skip');
   poll();
 });
@@ -1358,51 +1360,254 @@ $('channel')?.addEventListener('change', async () => {
   poll();
 });
 
-// ── Режим «в браузере»: реальное аудио в <audio>, управляемое per-window чекбоксом ──
-// «Слушать в этом окне» НЕ трогает сервер вообще — это чисто локальный выбор: слушать ли
-// именно в этой вкладке. Пауза/скип/шафл/стоп остаются общими (кнопки выше, как в Discord-
-// режиме) — они управляют одной на всех очередью. Клик по чекбоксу — тот самый пользова-
-// тельский жест, без которого браузер не даст стартовать .play().
-let lastBrowserPlayId = null;
-$('listenToggle')?.addEventListener('change', () => {
+// ── Браузерный режим: реальный проигрыватель на нативном <audio> ──────────────────
+// Транспорт (play/pause/перемотка/громкость) — ЛОКАЛЬНЫЙ, на стороне <audio> в этом окне.
+// Очередь и «текущий трек» — общие (сервер). Смена playToken → грузим оригинальный поток
+// текущего трека через Range-прокси /api/browser/stream (без транскода). Конец трека → шлём
+// серверу POST /ended (тот двигает очередь; дедуп по токену не даёт продвинуть дважды).
+function createBrowserAudio() {
   const audio = $('browserAudio');
-  const toggle = $('listenToggle');
-  if (!audio || !toggle) return;
-  if (toggle.checked) {
-    if (lastBrowserPlayId) {
-      audio.src = `/api/browser/stream?play=${encodeURIComponent(lastBrowserPlayId)}`;
-      audio.play().catch(() => {});
-    }
-    } else {
-    audio.pause();
-    audio.removeAttribute('src');
-    audio.load();     
+  const empty = document.querySelector('#player .player-empty');
+  const body = document.querySelector('#player .player-body');
+  const art = $('plArt');
+  const titleEl = $('plTitle');
+  const artistEl = $('plArtist');
+  const seek = $('plSeek');
+  const curEl = $('plCur');
+  const durEl = $('plDur');
+  const noteEl = $('plNote');
+  const playBtn = $('plPlay');
+  const playIcon = playBtn.querySelector('.material-icons');
+  const volEl = $('plVol');
+  const muteBtn = $('plMute');
+  const muteIcon = muteBtn.querySelector('.material-icons');
+
+  let token = null; // playToken, на который сейчас загружен <audio>
+  let seeking = false; // пользователь тащит ползунок перемотки
+  let unlocked = false; // был ли жест (иначе браузер блокирует .play())
+  let wantPlay = false; // намерение играть — чтобы авто-стартовать новый трек
+  let durationMs = 0; // длительность из метаданных сервера (fallback до audio.duration)
+  let lastMetaKey = '';
+  let endedFor = null; // токен, по которому уже отправили /ended (без повторов)
+
+  // Громкость — из localStorage (переживает перезагрузку страницы).
+  const savedVol = parseFloat(localStorage.getItem('jellyfinds:vol'));
+  audio.volume = savedVol >= 0 && savedVol <= 1 ? savedVol : 1;
+  volEl.value = String(Math.round(audio.volume * 100));
+  refreshMuteIcon();
+
+  function realDurationMs() {
+    return audio.duration && isFinite(audio.duration) ? audio.duration * 1000 : durationMs;
   }
+  function refreshMuteIcon() {
+    muteIcon.textContent =
+      audio.muted || audio.volume === 0
+        ? 'volume_off'
+        : audio.volume < 0.5
+          ? 'volume_down'
+          : 'volume_up';
+  }
+  function setPlayIcon() {
+    playIcon.textContent = audio.paused ? 'play_arrow' : 'pause';
+  }
+  function note(text, cls) {
+    noteEl.textContent = text;
+    noteEl.className = 'pl-note' + (cls ? ' ' + cls : '');
+  }
+  function setStatus() {
+    $('status').textContent = !token ? 'готово' : audio.paused ? 'пауза' : 'воспроизведение';
+  }
+  function loadToken(tok) {
+    token = tok;
+    endedFor = null;
+    audio.src = `/api/browser/stream?token=${encodeURIComponent(tok)}`;
+    audio.load();
+    if (unlocked && wantPlay) audio.play().catch(() => {});
+    setPlayIcon();
+  }
+  function clearAudio() {
+    token = null;
+    audio.removeAttribute('src');
+    audio.load();
+  }
+
+  // ── события <audio> ──
+  audio.addEventListener('timeupdate', () => {
+    if (seeking) return;
+    const d = realDurationMs();
+    const c = audio.currentTime * 1000;
+    seek.value = d > 0 ? String(Math.min(1000, Math.round((c / d) * 1000))) : '0';
+    curEl.textContent = fmt(c);
+    if (d > 0) durEl.textContent = fmt(d);
+  });
+  audio.addEventListener('play', () => {
+    wantPlay = true;
+    setPlayIcon();
+    setStatus();
+  });
+  audio.addEventListener('pause', () => {
+    setPlayIcon();
+    setStatus();
+  });
+  audio.addEventListener('waiting', () => note('загрузка…', 'loading-note'));
+  audio.addEventListener('playing', () => note('', ''));
+  audio.addEventListener('ended', () => {
+    if (!token || endedFor === token) return;
+    endedFor = token;
+    fetch('/api/browser/ended', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+    })
+      .then(() => poll())
+      .catch(() => {});
+  });
+  audio.addEventListener('error', () => {
+    if (token) note('ошибка потока', 'paused');
   });
 
-function updateBrowserAudio(s) {
-  const audio = $('browserAudio');
-  if (!audio) return;
-  const playId = s.nowPlaying ? s.nowPlaying.playId : null;
-  if (playId === lastBrowserPlayId) return; // трек/прогон не менялся — нечего делать
-  lastBrowserPlayId = playId;
-  const toggle = $('listenToggle');
-  if (!toggle || !toggle.checked) return; // это окно не слушает — просто запомнили playId на будущее
-  if (playId) {  
-    audio.src = `/api/browser/stream?play=${encodeURIComponent(playId)}`;
-    audio.play().catch(() => {});
+  // ── управление ──
+  playBtn.addEventListener('click', () => {
+    unlocked = true;
+    if (audio.paused) {
+      wantPlay = true;
+      audio.play().catch(() => {});
     } else {
+      wantPlay = false;
       audio.pause();
-      audio.removeAttribute('src');
-      audio.load();
+    }
+  });
+  seek.addEventListener('input', () => {
+    seeking = true;
+    curEl.textContent = fmt((realDurationMs() * Number(seek.value)) / 1000);
+  });
+  seek.addEventListener('change', () => {
+    const dSec = realDurationMs() / 1000;
+    if (dSec > 0) audio.currentTime = (dSec * Number(seek.value)) / 1000;
+    seeking = false;
+  });
+  volEl.addEventListener('input', () => {
+    audio.muted = false;
+    audio.volume = Number(volEl.value) / 100;
+    localStorage.setItem('jellyfinds:vol', String(audio.volume));
+    refreshMuteIcon();
+  });
+  muteBtn.addEventListener('click', () => {
+    audio.muted = !audio.muted;
+    refreshMuteIcon();
+  });
+  // «Предыдущий» = в начало текущего трека (истории предыдущих на клиенте нет).
+  $('plPrev')?.addEventListener('click', () => {
+    unlocked = true;
+    if (audio.src) {
+      audio.currentTime = 0;
+      audio.play().catch(() => {});
+    }
+  });
+  // «Следующий» — общий skip (двигает единую очередь на сервере).
+  $('plNext')?.addEventListener('click', async () => {
+    unlocked = true;
+    wantPlay = true;
+    await api.control('skip');
+    poll();
+  });
+
+  // ── Media Session (локскрин / медиа-клавиши / гарнитура) ──
+  function setMedia(meta) {
+    if (!('mediaSession' in navigator)) return;
+    try {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: meta.title || '',
+        artist: meta.artist || '',
+        album: meta.album || '',
+        artwork: meta.art ? [{ src: meta.art, sizes: '512x512', type: 'image/jpeg' }] : [],
+      });
+      navigator.mediaSession.setActionHandler('play', () => {
+        unlocked = true;
+        wantPlay = true;
+        audio.play().catch(() => {});
+      });
+      navigator.mediaSession.setActionHandler('pause', () => {
+        wantPlay = false;
+        audio.pause();
+      });
+      navigator.mediaSession.setActionHandler('nexttrack', async () => {
+        await api.control('skip');
+        poll();
+      });
+      navigator.mediaSession.setActionHandler('previoustrack', () => {
+        if (audio.src) audio.currentTime = 0;
+      });
+      try {
+        navigator.mediaSession.setActionHandler('seekto', (d) => {
+          if (typeof d.seekTime === 'number') audio.currentTime = d.seekTime;
+        });
+      } catch {
+        /* seekto не поддержан — не критично */
+      }
+    } catch {
+      /* ignore */
+    }
   }
+
+  return {
+    onState(s) {
+      const np = s.nowPlaying;
+      if (!np) {
+        empty.classList.remove('hidden');
+        body.classList.add('hidden');
+        if (token) clearAudio();
+        durationMs = 0;
+        lastMetaKey = '';
+        note('', '');
+        setStatus();
+        return;
+      }
+      empty.classList.add('hidden');
+      body.classList.remove('hidden');
+      durationMs = np.durationMs || 0;
+
+      // Метаданные (арт/название/исполнитель) обновляем только при смене трека.
+      const artSrc = np.artId ? artUrl(np.artId) : np.thumb || null;
+      const metaKey = [np.title, np.artist, np.durationMs, artSrc, np.source].join('|');
+      if (metaKey !== lastMetaKey) {
+        lastMetaKey = metaKey;
+        titleEl.innerHTML = `${srcBadge(np.source)} ${escapeHtml(np.title)}`;
+        artistEl.textContent = np.artist || '';
+        if (artSrc) {
+          art.src = artSrc;
+          art.classList.remove('hidden');
+        } else {
+          art.removeAttribute('src');
+          art.classList.add('hidden');
+        }
+        durEl.textContent = fmt(np.durationMs);
+        setMedia({ title: np.title, artist: np.artist, album: np.album, art: artSrc });
+      }
+
+      // Стрим-URL ещё резолвится (токена нет) — показываем «подготовка», звук не грузим.
+      if (!np.playToken) {
+        note('подготовка…', 'loading-note');
+        return;
+      }
+      // Новый трек стал текущим → грузим его оригинальный поток.
+      if (np.playToken !== token) {
+        note('', '');
+        loadToken(np.playToken);
+      }
+      setStatus();
+    },
+  };
 }
+
+const browserAudio = CHANNEL_MODE ? null : createBrowserAudio();
 
 $('search').addEventListener('input', onSearchInput);
 $('type').addEventListener('change', () => doSearch(true));
 
-// Перемотка: клик по прогресс-бару в «Сейчас играет».
-$('nowplaying').addEventListener('click', (e) => {
+// Перемотка кликом по прогресс-бару «Сейчас играет» — только Discord-панель (#nowplaying).
+// В браузерном плеере перемотка нативная (ползунок #plSeek → audio.currentTime).
+$('nowplaying')?.addEventListener('click', (e) => {
   const bar = e.target.closest('.bar');
   if (!bar || !npDuration) return;
   const rect = bar.getBoundingClientRect();

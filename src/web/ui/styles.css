@@ -885,3 +885,193 @@ h3 {
   display: none;
 }
 
+/* ── Проигрыватель браузерного режима (нативный <audio> + свои контролы) ─────── */
+.player {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 16px;
+}
+.player-empty {
+  color: var(--muted);
+  text-align: center;
+  padding: 26px 0;
+}
+.pl-art-wrap {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 12px;
+}
+.pl-art {
+  width: 100%;
+  max-width: 240px;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  border-radius: 12px;
+  background: var(--panel-2);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.pl-art.hidden {
+  display: none;
+}
+.pl-title {
+  font-weight: 700;
+  font-size: 16px;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pl-artist {
+  color: var(--muted);
+  text-align: center;
+  margin: 2px 0 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pl-seek {
+  margin-bottom: 6px;
+}
+.pl-times {
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 4px;
+}
+.pl-note {
+  min-height: 16px;
+  font-size: 12px;
+  text-align: center;
+  margin-top: 2px;
+}
+.pl-note.loading-note {
+  color: var(--accent);
+}
+.pl-note.paused {
+  color: #ffd27a;
+}
+.pl-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 22px;
+  margin: 6px 0 2px;
+}
+.pl-btn {
+  background: transparent;
+  border: none;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  border-radius: 50%;
+}
+.pl-btn:hover {
+  background: var(--panel-2);
+}
+.pl-btn .material-icons {
+  font-size: 30px;
+}
+.pl-btn-main {
+  background: var(--accent);
+  width: 60px;
+  height: 60px;
+}
+.pl-btn-main:hover {
+  background: var(--accent);
+  filter: brightness(1.1);
+}
+.pl-btn-main .material-icons {
+  font-size: 34px;
+  color: #fff;
+}
+.pl-secondary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+}
+.pl-mini {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  padding: 6px;
+  border-radius: 8px;
+}
+.pl-mini:hover {
+  color: var(--text);
+  background: var(--panel-2);
+}
+.pl-mini .material-icons {
+  font-size: 22px;
+}
+.pl-vol {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  max-width: 200px;
+}
+/* Кастомный range (перемотка / громкость) в цветах темы. */
+.pl-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  outline: none;
+  cursor: pointer;
+}
+.pl-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  border: none;
+}
+.pl-range::-moz-range-thumb {
+  width: 15px;
+  height: 15px;
+  border: none;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+}
+.pl-vol-range {
+  height: 4px;
+}
+
+/* Плеер на телефоне: крупнее арт и главная кнопка, удобные тап-зоны. */
+@media (max-width: 760px) {
+  .player {
+    padding: 14px;
+  }
+  .pl-art {
+    max-width: 62vw;
+  }
+  .pl-controls {
+    gap: 28px;
+  }
+  .pl-btn-main {
+    width: 66px;
+    height: 66px;
+  }
+  .pl-btn .material-icons {
+    font-size: 32px;
+  }
+  .pl-btn-main .material-icons {
+    font-size: 38px;
+  }
+  .pl-vol {
+    max-width: 160px;
+  }
+}
+

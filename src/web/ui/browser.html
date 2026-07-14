@@ -92,30 +92,71 @@
         </section>
 
         <section class="right">
-          <div id="nowplaying" class="nowplaying">
-            <div class="np-empty">Ничего не играет</div>
+          <div id="player" class="player">
+            <div class="player-empty">Ничего не играет</div>
+            <div class="player-body hidden">
+              <div class="pl-art-wrap">
+                <img id="plArt" class="pl-art hidden" alt="" onerror="this.classList.add('hidden')" />
+              </div>
+              <div class="pl-title" id="plTitle"></div>
+              <div class="pl-artist" id="plArtist"></div>
+
+              <div class="pl-seek">
+                <input
+                  id="plSeek"
+                  class="pl-range"
+                  type="range"
+                  min="0"
+                  max="1000"
+                  value="0"
+                  step="1"
+                  aria-label="Перемотка"
+                />
+                <div class="pl-times"><span id="plCur">0:00</span><span id="plDur">0:00</span></div>
+                <div id="plNote" class="pl-note"></div>
+              </div>
+
+              <div class="pl-controls">
+                <button id="plPrev" class="pl-btn" title="В начало трека">
+                  <span class="material-icons">skip_previous</span>
+                </button>
+                <button id="plPlay" class="pl-btn pl-btn-main" title="Играть / пауза">
+                  <span class="material-icons">play_arrow</span>
+                </button>
+                <button id="plNext" class="pl-btn" title="Следующий">
+                  <span class="material-icons">skip_next</span>
+                </button>
+              </div>
+
+              <div class="pl-secondary">
+                <button id="shuffle" class="pl-mini" title="Перемешать">
+                  <span class="material-icons">shuffle</span>
+                </button>
+                <div class="pl-vol">
+                  <button id="plMute" class="pl-mini" title="Звук">
+                    <span class="material-icons">volume_up</span>
+                  </button>
+                  <input
+                    id="plVol"
+                    class="pl-range pl-vol-range"
+                    type="range"
+                    min="0"
+                    max="100"
+                    value="100"
+                    aria-label="Громкость"
+                  />
+                </div>
+                <button id="stop" class="pl-mini" title="Стоп и очистить">
+                  <span class="material-icons">stop</span>
+                </button>
+              </div>
+
+              <!-- Реальный проигрыватель без нативных контролов; байты идут оригиналом
+                   через Range-прокси /api/browser/stream (без транскодирования). -->
+              <audio id="browserAudio" preload="metadata"></audio>
+            </div>
           </div>
 
-          <label class="playing-toggle" title="Аудио в этом окне играет только пока включено — очередь и пауза общие для всех окон">
-            <input id="listenToggle" type="checkbox" />
-            <span>Слушать в этом окне</span>
-          </label>
-          <audio id="browserAudio" preload="none"></audio>
-
-          <div class="controls">
-            <button id="skip" title="Следующий">
-              <span class="material-icons">skip_next</span>
-            </button>
-            <button id="pause" title="Пауза / продолжить">
-              <span class="material-icons">play_arrow</span>
-            </button>
-            <button id="shuffle" title="Перемешать">
-              <span class="material-icons">shuffle</span>
-            </button>
-            <button id="stop" title="Стоп и очистить">
-              <span class="material-icons">stop</span>
-            </button>
-          </div>
           <h3>Очередь</h3>
           <ul id="queue" class="queue"></ul>
         </section>

@@ -1,56 +1,51 @@
 import crypto from 'node:crypto';
-import type { ServerResponse } from 'node:http';
-import prism from 'prism-media';
 import { logger } from '../logger.js';
 import type { Track } from './track.js';
 
 export interface BrowserNowPlaying {
   track: Track;
-  playbackMs: number;
-  paused: boolean;
+  /**
+   * Токен текущего трека — меняется при каждой смене трека. `null`, пока стрим-URL ещё
+   * резолвится (у YouTube/ВК/Яндекс это занимает время): клиент грузит <audio> только
+   * после появления токена, а до этого показывает трек в состоянии «загрузка».
+   */
+  playToken: string | null;
+  /** true — трек выбран, но стрим-URL ещё не готов (идёт резолв). */
   buffering: boolean;
-  /** Id текущего "физического" прогона стрима — меняется на старте/резюме/сике трека.
-   *  Клиент триггерит новый <audio src> при смене playId (см. /api/browser/stream). */
-  playId: string;
 }
 
 export interface BrowserQueueSnapshot {
   current: Track | null;
   upcoming: Track[];
-  paused: boolean;
 }
 
-const MP3_BITRATE = '320k';
+/** Цель проксирования для текущего трека: реальный upstream-URL + прокси для fetch. */
+export interface BrowserStreamTarget {
+  url: string;
+  /** HTTP(S)-прокси, через который надо тянуть upstream (ВК/Яндекс/YouTube). */
+  proxy?: string;
+}
 
 /**
- * Плеер "воспроизведение в браузере" — та же модель очереди, что у GuildMusicPlayer
- * (audio/player.ts), но без Discord вообще: вместо голосового подключения — живой
- * MP3-стрим по HTTP (см. server.ts: GET /api/browser/stream).
+ * Плеер «воспроизведение в браузере»: та же модель очереди, что у GuildMusicPlayer
+ * (audio/player.ts), но без Discord и, главное, БЕЗ FFmpeg. Сервер лишь держит очередь,
+ * выбирает «текущий» трек и резолвит его настоящий стрим-URL источника. Байты отдаёт
+ * не он сам, а тонкий Range-прокси в web/server.ts (GET /api/browser/stream), который
+ * перекидывает оригинальный поток источника в браузер как есть — без перекодирования.
  *
- * Аудио-пайплайн: тот же источник (Jellyfin/YouTube/Яндекс/ВК) → FFmpeg (-re, libmp3lame) →
- * fan-out во все подключённые HTTP-ответы. -re держит темп кодирования равным реальному
- * времени (иначе браузер вмиг скачал бы весь трек, и пауза потеряла бы смысл).
- *
- * Флажок «воспроизводить музыку» на странице — это `paused` наоборот: пока он выключен,
- * enqueue() просто копит очередь и ничего не запускает.
+ * Управление воспроизведением (play/pause/перемотка/громкость) теперь НАТИВНОЕ, на стороне
+ * <audio> в браузере: сервер этим не занимается. Когда трек доиграл, клиент сообщает об этом
+ * (POST /api/browser/ended с токеном) — и сервер продвигает очередь. Дедуп по токену не даёт
+ * нескольким окнам продвинуть очередь дважды.
  */
 export class BrowserPlayer {
   private queue: Track[] = [];
   private current: Track | null = null;
-  private currentTranscoder: prism.FFmpeg | null = null;
-  private readonly listeners = new Set<ServerResponse>();
-  private playId: string | null = null;
-  /** Смещение начала текущего прогона (мс) — при паузе/сике FFmpeg перезапускается с -ss. */
-  private seekOffsetMs = 0;
-  /** Date.now() момента запуска текущего прогона — для расчёта playbackMs без опроса FFmpeg. */
-  private startedAt = 0;
-  private firstByteReceived = false;
+  /** Токен текущего трека; `null`, пока URL не зарезолвен (клиент ждёт его перед загрузкой). */
+  private playToken: string | null = null;
   private loopOne = false;
   private suppressLoop = false;
   private destroyed = false;
-/** true — очередь на паузе (глобально, для всех окон). Управляется кнопкой «пауза»,
- *  не флажком «слушать в этом окне» — тот теперь чисто клиентский, см. app.js. */
-  private paused = false;
   private readonly onTrackStart?: (track: Track) => void;
 
   constructor(opts?: { onTrackStart?: (track: Track) => void }) {
@@ -63,8 +58,9 @@ export class BrowserPlayer {
     if (position === 'next') this.queue.unshift(...tracks);
     else this.queue.push(...tracks);
     this.prefetchNext();
-    // Флажок уже включён и сейчас простой — запускаем сразу (как start() у Discord-плеера).
-    if (!this.paused && !this.current) void this.playNext();
+    // Ничего не играет — делаем голову «текущей» (клиент сам решит, запускать ли звук:
+    // без пользовательского жеста браузер не даст .play(), это нормально).
+    if (!this.current) void this.playNext();
   }
 
   removeAt(index: number): Track | null {
@@ -105,26 +101,10 @@ export class BrowserPlayer {
 
   // ── Команды управления ───────────────────────────────────────────────────
 
-  /** Переключить флажок «воспроизводить музыку». Возвращает новое состояние paused. */
-  togglePlaying(): boolean {
-    if (this.paused) {
-      this.paused = false;
-      if (this.current) this.startTranscoder(this.current, this.seekOffsetMs);
-      else void this.playNext(); // очередь копилась без проигрывания — запускаем голову
-    } else {
-      // Фиксируем позицию на момент паузы, чтобы включение продолжило именно отсюда.
-      if (this.current) this.seekOffsetMs = this.currentPlaybackMs();
-      this.paused = true;
-      this.stopTranscoder();
-    }
-    return this.paused;
-  }
-
+  /** Следующий трек (общий для всех окон — двигает единую очередь). */
   skip(): boolean {
     if (!this.current && this.queue.length === 0) return false;
     this.suppressLoop = true; // скип не должен повторять текущий трек
-    this.paused = false;
-    this.stopTranscoder();
     void this.playNext();
     return true;
   }
@@ -133,22 +113,7 @@ export class BrowserPlayer {
     this.queue = [];
     this.suppressLoop = true;
     this.current = null;
-    this.playId = null;
-    this.paused = false;
-    this.stopTranscoder();
-  }
-
-  /** Перемотать текущий трек на позицию (мс); неявно продолжает воспроизведение. */
-  seek(positionMs: number): boolean {
-    if (!this.current) return false;
-    const clamped = Math.max(0, Math.min(positionMs, Math.max(0, this.current.durationMs - 1000)));
-    this.paused = false;
-    this.startTranscoder(this.current, clamped);
-    return true;
-  }
-
-  get isPaused(): boolean {
-    return this.paused;
+    this.playToken = null;
   }
 
   get isActive(): boolean {
@@ -156,29 +121,40 @@ export class BrowserPlayer {
   }
 
   getSnapshot(): BrowserQueueSnapshot {
-    return { current: this.current, upcoming: [...this.queue], paused: this.paused };
+    return { current: this.current, upcoming: [...this.queue] };
   }
 
   getNowPlaying(): BrowserNowPlaying | null {
-    if (!this.current || !this.playId) return null;
+    if (!this.current) return null;
     return {
       track: this.current,
-      playbackMs: this.currentPlaybackMs(),
-      paused: this.paused,
-      buffering: this.isLoading,
-      playId: this.playId,
+      playToken: this.playToken,
+      buffering: !this.playToken, // токена ещё нет → идёт резолв URL
     };
   }
 
-  /** Трек выбран, но байты ещё не пошли (резолв URL источника либо FFmpeg только стартует). */
-  get isLoading(): boolean {
-    if (!this.current || this.paused) return false;
-    return !this.currentTranscoder || !this.firstByteReceived;
+  // ── Стрим-таргет и завершение трека (для web/server.ts) ────────────────────
+
+  /**
+   * Цель проксирования для текущего прогона. `null`, если токен устарел (клиент запросил
+   * уже сменившийся трек) либо URL ещё не готов — тогда сервер отвечает 404, а клиент
+   * подхватит свежее состояние на следующем poll().
+   */
+  getStreamTarget(token: string): BrowserStreamTarget | null {
+    if (!this.current || !this.playToken || token !== this.playToken) return null;
+    if (!this.current.streamUrl) return null;
+    return { url: this.current.streamUrl, proxy: this.current.proxy };
   }
 
-  private currentPlaybackMs(): number {
-    if (this.paused || !this.currentTranscoder) return this.seekOffsetMs;
-    return this.seekOffsetMs + (Date.now() - this.startedAt);
+  /**
+   * Клиент сообщил, что <audio> доиграл трек с этим токеном → продвигаем очередь.
+   * Проверка токена делает вызов идемпотентным: второе окно с тем же (уже устаревшим)
+   * токеном очередь повторно не двинет.
+   */
+  reportEnded(token: string): boolean {
+    if (!this.playToken || token !== this.playToken) return false;
+    void this.playNext();
+    return true;
   }
 
   // ── Резолв стрим-URL (как в GuildMusicPlayer — мемоизация + предзагрузка головы) ────
@@ -212,7 +188,6 @@ export class BrowserPlayer {
 
   private async playNext(): Promise<void> {
     if (this.destroyed) return;
-    this.stopTranscoder();
 
     const finished = this.current;
     const loop = this.loopOne && !this.suppressLoop;
@@ -222,122 +197,33 @@ export class BrowserPlayer {
     const next = this.queue.shift();
     if (!next) {
       this.current = null;
-      this.playId = null;
+      this.playToken = null;
       return;
     }
 
+    // Токен обнуляем сразу: пока URL не готов, /stream отдаёт 404, а клиент видит «загрузка».
     this.current = next;
+    this.playToken = null;
+
     try {
       await this.ensureResolved(next);
-      this.startTranscoder(next, 0);
-      this.prefetchNext();
+      // Пока резолвили, трек мог смениться (skip/stop/новый playNext) — тогда молча выходим.
+      if (this.current !== next) return;
+      this.playToken = crypto.randomUUID();
       this.onTrackStart?.(next);
+      this.prefetchNext();
     } catch (err) {
-      logger.error(`[browser] Не удалось создать поток для "${next.title}":`, err);
-      this.current = null;
-      await this.playNext();
-    }
-  }
-
-  // ── FFmpeg → MP3 → HTTP ──────────────────────────────────────────────────
-
-  private startTranscoder(track: Track, startMs: number): void {
-    // КРИТИЧНО: убить предыдущий прогон (если был) ДО старта нового. Раньше seek()/resume
-    // просто перезаписывали this.currentTranscoder новым процессом, а старый молча продолжал
-    // работать и писать байты в те же listeners — два FFmpeg одновременно в один HTTP-поток
-    // давали характерный баг «перемотка ломает звук, играет пробелами» (перемешанные MP3-байты
-    // от двух процессов). Плюс явно закрываем прежних слушателей: они подписаны на байты
-    // прошлого прогона, а не нового, и их «зависший» коннект тоже нужно оборвать.
-    this.stopTranscoder();
-    for (const res of this.listeners) {
-      try {
-        res.end();
-      } catch {
-        /* ignore */
+      logger.error(`[browser] Не удалось получить поток для "${next.title}":`, err);
+      if (this.current === next) {
+        this.current = null;
+        await this.playNext();
       }
     }
-    this.listeners.clear();
-    this.playId = crypto.randomUUID();
-    this.startedAt = Date.now();
-    this.seekOffsetMs = startMs;
-    this.firstByteReceived = false;
-
-    const args = ['-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5'];
-    if (track.proxy) args.push('-http_proxy', track.proxy);
-    // -re — кодировать в реальном темпе (а не «взахлёб»): иначе клиент вмиг скачает весь
-    // трек и серверная пауза/сик перестанут что-либо значить (см. заголовок класса).
-    args.push('-re');
-    if (startMs > 0) args.push('-ss', (startMs / 1000).toFixed(3));
-    args.push(
-      '-i', track.streamUrl,
-      '-analyzeduration', '0',
-      '-loglevel', '0',
-      '-vn',
-      '-ar', '44100',
-      '-ac', '2',
-      '-c:a', 'libmp3lame',
-      '-b:a', MP3_BITRATE,
-      '-f', 'mp3',
-    );
-
-    const transcoder = new prism.FFmpeg({ args });
-    transcoder.on('error', (err: Error) => {
-      logger.warn(`[browser] FFmpeg error на "${track.title}": ${err.message}`);
-    });
-    transcoder.on('data', (chunk: Buffer) => {
-      this.firstByteReceived = true;
-      for (const res of this.listeners) {
-        // Backpressure сознательно игнорируем: личный сервер, слушателей мало, а копить
-        // очередь записи на медленном клиенте хуже, чем изредка отстать на кадр-другой.
-        res.write(chunk);
-      }
-    });
-    transcoder.on('end', () => {
-      if (this.destroyed || this.paused) return;
-      void this.playNext();
-    });
-    this.currentTranscoder = transcoder;
-  }
-
-  private stopTranscoder(): void {
-    try {
-      this.currentTranscoder?.destroy();
-    } catch {
-      /* ignore */
-    }
-    this.currentTranscoder = null;
-  }
-
-  // ── HTTP-стрим (см. server.ts: GET /api/browser/stream) ─────────────────
-
-  /**
-   * Подписать HTTP-ответ на текущий живой поток. false, если playId не совпадает с текущим
-   * (например, клиент запросил уже сменившийся трек) — сервер отвечает 404, клиент сам
-   * перезапросит свежее состояние на следующем poll().
-   */
-  attachListener(res: ServerResponse, requestedPlayId: string): boolean {
-    if (!this.playId || requestedPlayId !== this.playId) return false;
-    res.writeHead(200, {
-      'Content-Type': 'audio/mpeg',
-      'Cache-Control': 'no-store',
-      Connection: 'keep-alive',
-    });
-    this.listeners.add(res);
-    res.on('close', () => this.listeners.delete(res));
-    return true;
   }
 
   /** Полная остановка (например, при завершении процесса бота). */
   destroy(): void {
     this.destroyed = true;
     this.stop();
-    for (const res of this.listeners) {
-      try {
-        res.end();
-      } catch {
-        /* ignore */
-      }
-    }
-    this.listeners.clear();
   }
 }
