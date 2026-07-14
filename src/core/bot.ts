@@ -97,6 +97,8 @@ export interface BrowserBotState {
     source?: 'jellyfin' | 'youtube' | 'yandex' | 'vk';
     /** Токен текущего трека — клиент грузит новый <audio src> при смене; null пока идёт резолв. */
     playToken: string | null;
+    /** true — поток HLS (.m3u8): клиент играет его через hls.js, а не нативным <audio>. */
+    hls: boolean;
   } | null;
   queue: {
     title: string;
@@ -1031,6 +1033,7 @@ export class Bot {
             buffering: np.buffering,
             source: np.track.source,
             playToken: np.playToken,
+            hls: np.hls,
           }
         : null,
       queue: snapshot.upcoming.map((t) => ({

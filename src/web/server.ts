@@ -33,6 +33,139 @@ function streamDispatcher(proxy?: string): Dispatcher | undefined {
   return agent;
 }
 
+/**
+ * Нейтральный десктопный UA: часть CDN (googlevideo/ВК) капризничает к «пустому» клиенту.
+ * Тот же UA идёт и на манифест, и на сегменты HLS.
+ */
+const DESKTOP_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+  '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+
+/** Похоже ли, что по этому URL/типу лежит HLS-манифест (плейлист .m3u8). */
+function isHlsResponse(url: string, contentType: string | null): boolean {
+  if (contentType && /mpegurl/i.test(contentType)) return true;
+  return /\.m3u8(\?|$)/i.test(url);
+}
+
+/** eTLD+1 (последние две метки хоста) — грубое сравнение «тот же сайт». */
+function registrableDomain(host: string): string {
+  return host.split('.').slice(-2).join('.');
+}
+
+/**
+ * SSRF-защита для прокси HLS-сегментов: разрешаем тянуть только тот же сайт, что и
+ * манифест текущего трека (эндпоинт и так под requireAuth, но так надёжнее).
+ */
+function sameSite(a: string, b: string): boolean {
+  return a === b || registrableDomain(a) === registrableDomain(b);
+}
+
+/**
+ * Переписывает HLS-манифест: все URI сегментов, ключей и вложенных плейлистов заворачиваются
+ * на наш прокси `/api/browser/hls`, чтобы браузер (hls.js) не ходил на CDN источника напрямую
+ * (там CORS/требования к заголовкам). Относительные URI резолвятся от адреса самого манифеста.
+ */
+function rewriteHlsManifest(text: string, manifestUrl: string, token: string): string {
+  const proxied = (rawUri: string): string => {
+    const abs = new URL(rawUri, manifestUrl).toString();
+    return `/api/browser/hls?token=${encodeURIComponent(token)}&u=${encodeURIComponent(abs)}`;
+  };
+  return text
+    .split(/\r?\n/)
+    .map((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return line;
+      // Строки-теги: переписываем только URI="..." внутри (EXT-X-KEY, EXT-X-MAP, EXT-X-MEDIA…).
+      if (trimmed.startsWith('#')) {
+        return line.replace(/URI="([^"]+)"/g, (_m, uri: string) => `URI="${proxied(uri)}"`);
+      }
+      // Прочие непустые строки — это URI сегмента или вложенного медиа-плейлиста.
+      return proxied(trimmed);
+    })
+    .join('\n');
+}
+
+/**
+ * Тянет upstream (манифест/сегмент/прогрессивный файл) и отдаёт клиенту:
+ *  • HLS-манифест → читаем целиком, переписываем URI на наш прокси, отдаём как m3u8;
+ *  • всё остальное → релеим статус, заголовки диапазона и байты как есть (без транскода).
+ * Общая для GET /api/browser/stream (первый манифест) и GET /api/browser/hls (сегменты/ключи/
+ * вложенные плейлисты). `token` нужен, чтобы переписанные ссылки на сегменты вели обратно сюда.
+ */
+async function serveUpstream(
+  req: express.Request,
+  res: express.Response,
+  upstreamUrl: string,
+  proxy: string | undefined,
+  token: string,
+  forceHls = false,
+): Promise<void> {
+  // Клиент оборвал соединение (перемотка → новый запрос / закрыл вкладку) — гасим upstream.
+  const controller = new AbortController();
+  res.on('close', () => controller.abort());
+
+  const headers: Record<string, string> = { 'Accept-Encoding': 'identity', 'User-Agent': DESKTOP_UA };
+  if (typeof req.headers.range === 'string') headers['Range'] = req.headers.range;
+
+  let upstream: Awaited<ReturnType<typeof fetch>>;
+  try {
+    upstream = await fetch(upstreamUrl, {
+      headers,
+      signal: controller.signal,
+      dispatcher: streamDispatcher(proxy),
+    } as RequestInit & { dispatcher?: Dispatcher });
+  } catch (err) {
+    if (controller.signal.aborted) return; // клиент сам ушёл — это не ошибка
+    logger.warn(`[browser] Стрим-прокси: upstream недоступен: ${err instanceof Error ? err.message : err}`);
+    if (!res.headersSent) res.status(502).end();
+    else res.end();
+    return;
+  }
+
+  // HLS-манифест: переписываем ссылки на сегменты/ключи на наш прокси и отдаём текстом.
+  // forceHls — для ВК: трактуем первый ответ как манифест, даже если content-type «кривой».
+  if (forceHls || isHlsResponse(upstreamUrl, upstream.headers.get('content-type'))) {
+    let text: string;
+    try {
+      text = await upstream.text();
+    } catch (err) {
+      if (controller.signal.aborted) return;
+      logger.warn(`[browser] HLS-манифест не дочитан: ${err instanceof Error ? err.message : err}`);
+      if (!res.headersSent) res.status(502).end();
+      return;
+    }
+    if (controller.signal.aborted) return;
+    res.status(upstream.status);
+    res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+    res.setHeader('Cache-Control', 'no-store');
+    res.end(rewriteHlsManifest(text, upstreamUrl, token));
+    return;
+  }
+
+  // Обычный сегмент/прогрессивный поток — релеим статус (200/206/416), диапазон и байты как есть.
+  res.status(upstream.status);
+  for (const h of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'content-disposition']) {
+    const v = upstream.headers.get(h);
+    if (v) res.setHeader(h, v);
+  }
+  if (!upstream.headers.get('accept-ranges')) res.setHeader('Accept-Ranges', 'bytes');
+  res.setHeader('Cache-Control', 'no-store');
+
+  if (!upstream.body) {
+    res.end();
+    return;
+  }
+  const nodeStream = Readable.fromWeb(upstream.body as import('node:stream/web').ReadableStream<Uint8Array>);
+  nodeStream.on('error', () => {
+    try {
+      res.destroy();
+    } catch {
+      /* ignore */
+    }
+  });
+  nodeStream.pipe(res);
+}
+
 /** Сравнение строк за постоянное время (через sha256, чтобы не утекала длина). */
 function safeEqual(a: string, b: string): boolean {
   const ha = crypto.createHash('sha256').update(a).digest();
@@ -854,65 +987,40 @@ export function startWebPanel(bot: Bot, config: AppConfig): void {
       res.status(404).end();
       return;
     }
+    // Для прогрессивного файла — сразу байты; для HLS serveUpstream переписывает манифест,
+    // а сегменты потом придут на /api/browser/hls. target.hls=true (ВК) → форсим режим манифеста.
+    await serveUpstream(req, res, target.url, target.proxy, token, target.hls);
+  });
 
-    // Клиент оборвал соединение (перемотка → новый запрос / закрыл вкладку) — гасим upstream.
-    const controller = new AbortController();
-    res.on('close', () => controller.abort());
-
-    const headers: Record<string, string> = { 'Accept-Encoding': 'identity' };
-    if (typeof req.headers.range === 'string') headers['Range'] = req.headers.range;
-    // Нейтральный десктопный UA: часть CDN (googlevideo) капризничает к «пустому» клиенту.
-    headers['User-Agent'] =
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-      '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
-
-    let upstream: Awaited<ReturnType<typeof fetch>>;
+  // Прокси HLS-сегментов/ключей/вложенных плейлистов: браузер (hls.js) ходит СЮДА, а не на CDN
+  // источника напрямую (там CORS/нужны заголовки). Реальный адрес приходит в ?u=, привязан к
+  // текущему треку через token. SSRF-защита: только тот же сайт, что и манифест трека.
+  app.get('/api/browser/hls', requireAuth, async (req, res) => {
+    const token = String(req.query.token ?? '');
+    const u = String(req.query.u ?? '');
+    const target = token ? bot.browserGetStreamTarget(token) : null;
+    if (!target || !u) {
+      res.status(404).end();
+      return;
+    }
+    let abs: URL;
+    let manifestHost: string;
     try {
-      upstream = await fetch(target.url, {
-        headers,
-        signal: controller.signal,
-        dispatcher: streamDispatcher(target.proxy),
-      } as RequestInit & { dispatcher?: Dispatcher });
-    } catch (err) {
-      if (controller.signal.aborted) return; // клиент сам ушёл — это не ошибка
-      logger.warn(
-        `[browser] Стрим-прокси: upstream недоступен: ${err instanceof Error ? err.message : err}`,
-      );
-      if (!res.headersSent) res.status(502).end();
-      else res.end();
+      abs = new URL(u);
+      manifestHost = new URL(target.url).hostname;
+    } catch {
+      res.status(400).end();
       return;
     }
-
-    // Релеим статус (200/206/416) и заголовки диапазона/типа как есть.
-    res.status(upstream.status);
-    for (const h of [
-      'content-type',
-      'content-length',
-      'content-range',
-      'accept-ranges',
-      'content-disposition',
-    ]) {
-      const v = upstream.headers.get(h);
-      if (v) res.setHeader(h, v);
-    }
-    if (!upstream.headers.get('accept-ranges')) res.setHeader('Accept-Ranges', 'bytes');
-    res.setHeader('Cache-Control', 'no-store');
-
-    if (!upstream.body) {
-      res.end();
+    if (abs.protocol !== 'https:' && abs.protocol !== 'http:') {
+      res.status(400).end();
       return;
     }
-    const nodeStream = Readable.fromWeb(
-      upstream.body as import('node:stream/web').ReadableStream<Uint8Array>,
-    );
-    nodeStream.on('error', () => {
-      try {
-        res.destroy();
-      } catch {
-        /* ignore */
-      }
-    });
-    nodeStream.pipe(res);
+    if (!sameSite(abs.hostname, manifestHost)) {
+      res.status(403).end();
+      return;
+    }
+    await serveUpstream(req, res, abs.toString(), target.proxy, token);
   });
 
   // Клиент сообщает, что <audio> доиграл трек с этим токеном → продвигаем очередь.

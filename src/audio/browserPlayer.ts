@@ -12,6 +12,17 @@ export interface BrowserNowPlaying {
   playToken: string | null;
   /** true — трек выбран, но стрим-URL ещё не готов (идёт резолв). */
   buffering: boolean;
+  /**
+   * true — источник отдаёт HLS-манифест (.m3u8), а не готовый прогрессивный файл.
+   * Обычный <audio> в Chrome/Firefox HLS не играет — клиент подключает hls.js,
+   * а сервер переписывает манифест и проксирует сегменты (см. web/server.ts).
+   */
+  hls: boolean;
+}
+
+/** Похож ли стрим-URL на HLS-манифест (плейлист .m3u8). */
+export function isHlsUrl(url: string | undefined): boolean {
+  return !!url && /\.m3u8(\?|$)/i.test(url);
 }
 
 export interface BrowserQueueSnapshot {
@@ -24,6 +35,8 @@ export interface BrowserStreamTarget {
   url: string;
   /** HTTP(S)-прокси, через который надо тянуть upstream (ВК/Яндекс/YouTube). */
   proxy?: string;
+  /** true — этот upstream отдаёт HLS-манифест (сервер обязан его переписать, а не лить как есть). */
+  hls: boolean;
 }
 
 /**
@@ -130,6 +143,8 @@ export class BrowserPlayer {
       track: this.current,
       playToken: this.playToken,
       buffering: !this.playToken, // токена ещё нет → идёт резолв URL
+      // ВК всегда отдаёт HLS → гоним его через hls.js всегда, не полагаясь на вид URL.
+      hls: this.current.source === 'vk' || isHlsUrl(this.current.streamUrl),
     };
   }
 
@@ -143,7 +158,11 @@ export class BrowserPlayer {
   getStreamTarget(token: string): BrowserStreamTarget | null {
     if (!this.current || !this.playToken || token !== this.playToken) return null;
     if (!this.current.streamUrl) return null;
-    return { url: this.current.streamUrl, proxy: this.current.proxy };
+    return {
+      url: this.current.streamUrl,
+      proxy: this.current.proxy,
+      hls: this.current.source === 'vk' || isHlsUrl(this.current.streamUrl),
+    };
   }
 
   /**

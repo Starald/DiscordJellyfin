@@ -1389,6 +1389,10 @@ function createBrowserAudio() {
   let durationMs = 0; // длительность из метаданных сервера (fallback до audio.duration)
   let lastMetaKey = '';
   let endedFor = null; // токен, по которому уже отправили /ended (без повторов)
+  let hls = null; // экземпляр hls.js для текущего HLS-трека (null для прогрессивных)
+  let currentIsHls = false; // текущий трек — HLS-манифест (.m3u8)? (из state.nowPlaying.hls)
+  // Safari умеет HLS нативно — тогда hls.js не нужен, отдаём URL прямо в <audio>.
+  const canPlayHlsNatively = audio.canPlayType('application/vnd.apple.mpegurl') !== '';
 
   // Громкость — из localStorage (переживает перезагрузку страницы).
   const savedVol = parseFloat(localStorage.getItem('jellyfinds:vol'));
@@ -1417,16 +1421,53 @@ function createBrowserAudio() {
   function setStatus() {
     $('status').textContent = !token ? 'готово' : audio.paused ? 'пауза' : 'воспроизведение';
   }
+  function teardownHls() {
+    if (hls) {
+      try {
+        hls.destroy();
+      } catch {
+        /* ignore */
+      }
+      hls = null;
+    }
+  }
   function loadToken(tok) {
     token = tok;
     endedFor = null;
-    audio.src = `/api/browser/stream?token=${encodeURIComponent(tok)}`;
-    audio.load();
-    if (unlocked && wantPlay) audio.play().catch(() => {});
+    teardownHls();
+    const url = `/api/browser/stream?token=${encodeURIComponent(tok)}`;
+    // HLS (ВК и т.п.) в Chrome/Firefox нативно не играется → через hls.js. Сегменты сервер
+    // проксирует сам (переписанный манифест), поэтому CORS/ключи не мешают.
+    if (currentIsHls && !canPlayHlsNatively && window.Hls && window.Hls.isSupported()) {
+      hls = new window.Hls({ enableWorker: true });
+      const H = window.Hls;
+      hls.on(H.Events.MANIFEST_PARSED, () => {
+        if (unlocked && wantPlay) audio.play().catch(() => {});
+      });
+      hls.on(H.Events.ERROR, (_e, data) => {
+        if (!data || !data.fatal) return; // не-фатальные ошибки hls.js разрулит сам
+        // Сетевые/медиа-сбои пробуем восстановить, не роняя воспроизведение.
+        if (data.type === H.ErrorTypes.NETWORK_ERROR) {
+          hls.startLoad();
+        } else if (data.type === H.ErrorTypes.MEDIA_ERROR) {
+          hls.recoverMediaError();
+        } else {
+          note('ошибка потока', 'paused');
+        }
+      });
+      hls.loadSource(url);
+      hls.attachMedia(audio);
+    } else {
+      // Прогрессивный файл или нативный HLS (Safari) — обычный путь.
+      audio.src = url;
+      audio.load();
+      if (unlocked && wantPlay) audio.play().catch(() => {});
+    }
     setPlayIcon();
   }
   function clearAudio() {
     token = null;
+    teardownHls();
     audio.removeAttribute('src');
     audio.load();
   }
@@ -1592,6 +1633,8 @@ function createBrowserAudio() {
       }
       // Новый трек стал текущим → грузим его оригинальный поток.
       if (np.playToken !== token) {
+        // Сервер помечает HLS; ВК гоним через hls.js всегда, даже если флаг не пришёл.
+        currentIsHls = !!np.hls || np.source === 'vk';
         note('', '');
         loadToken(np.playToken);
       }
