@@ -143,8 +143,9 @@ export class BrowserPlayer {
       track: this.current,
       playToken: this.playToken,
       buffering: !this.playToken, // токена ещё нет → идёт резолв URL
-      // ВК всегда отдаёт HLS → гоним его через hls.js всегда, не полагаясь на вид URL.
-      hls: this.current.source === 'vk' || isHlsUrl(this.current.streamUrl),
+      // ВК отдаёт по треку ЛИБО прямой .mp3, ЛИБО .m3u8 — определяем по URL, не форсим.
+      // (Если ошиблись — клиент сам переключится hls.js ↔ нативный <audio>.)
+      hls: isHlsUrl(this.current.streamUrl),
     };
   }
 
@@ -161,7 +162,7 @@ export class BrowserPlayer {
     return {
       url: this.current.streamUrl,
       proxy: this.current.proxy,
-      hls: this.current.source === 'vk' || isHlsUrl(this.current.streamUrl),
+      hls: isHlsUrl(this.current.streamUrl),
     };
   }
 

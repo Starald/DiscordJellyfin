@@ -1391,6 +1391,7 @@ function createBrowserAudio() {
   let endedFor = null; // токен, по которому уже отправили /ended (без повторов)
   let hls = null; // экземпляр hls.js для текущего HLS-трека (null для прогрессивных)
   let currentIsHls = false; // текущий трек — HLS-манифест (.m3u8)? (из state.nowPlaying.hls)
+  let triedFallback = false; // для текущего токена уже переключались hls.js ↔ нативный <audio>?
   // Safari умеет HLS нативно — тогда hls.js не нужен, отдаём URL прямо в <audio>.
   const canPlayHlsNatively = audio.canPlayType('application/vnd.apple.mpegurl') !== '';
 
@@ -1431,38 +1432,65 @@ function createBrowserAudio() {
       hls = null;
     }
   }
+  function streamUrlFor(tok) {
+    return `/api/browser/stream?token=${encodeURIComponent(tok)}`;
+  }
+  // hls.js поддержан и трек не играется нативно? (Chrome/Firefox: HLS только через hls.js)
+  function canUseHlsJs() {
+    return !canPlayHlsNatively && !!window.Hls && window.Hls.isSupported();
+  }
+  // Прогрессивный файл (mp3 и т.п.) или нативный HLS (Safari) — прямой путь через <audio>.
+  function playViaNative(url) {
+    teardownHls();
+    audio.src = url;
+    audio.load();
+    if (unlocked && wantPlay) audio.play().catch(() => {});
+  }
+  // HLS через hls.js: сегменты/ключи проксирует сервер (переписанный манифест), CORS не мешает.
+  function playViaHls(url) {
+    teardownHls();
+    const H = window.Hls;
+    const inst = new H({ enableWorker: true });
+    hls = inst;
+    inst.on(H.Events.MANIFEST_PARSED, () => {
+      if (unlocked && wantPlay) audio.play().catch(() => {});
+    });
+    inst.on(H.Events.ERROR, (_e, data) => {
+      if (hls !== inst) return; // событие от уже уничтоженного экземпляра — игнор
+      if (!data || !data.fatal) return; // не-фатальные ошибки hls.js разрулит сам
+      // Манифест не распарсился/не загрузился — это, скорее всего, НЕ HLS (VK отдал mp3).
+      // Один раз откатываемся на нативный <audio>, вместо того чтобы крутить startLoad впустую.
+      const badManifest =
+        data.details === H.ErrorDetails.MANIFEST_PARSING_ERROR ||
+        data.details === H.ErrorDetails.MANIFEST_LOAD_ERROR ||
+        data.details === H.ErrorDetails.MANIFEST_INCOMPATIBLE_CODECS_ERROR;
+      if (badManifest && !triedFallback) {
+        triedFallback = true;
+        playViaNative(url);
+        return;
+      }
+      // Прочие сетевые/медиа-сбои пробуем восстановить, не роняя воспроизведение.
+      if (data.type === H.ErrorTypes.NETWORK_ERROR) {
+        inst.startLoad();
+      } else if (data.type === H.ErrorTypes.MEDIA_ERROR) {
+        inst.recoverMediaError();
+      } else if (!triedFallback) {
+        triedFallback = true;
+        playViaNative(url);
+      } else {
+        note('ошибка потока', 'paused');
+      }
+    });
+    inst.loadSource(url);
+    inst.attachMedia(audio);
+  }
   function loadToken(tok) {
     token = tok;
     endedFor = null;
-    teardownHls();
-    const url = `/api/browser/stream?token=${encodeURIComponent(tok)}`;
-    // HLS (ВК и т.п.) в Chrome/Firefox нативно не играется → через hls.js. Сегменты сервер
-    // проксирует сам (переписанный манифест), поэтому CORS/ключи не мешают.
-    if (currentIsHls && !canPlayHlsNatively && window.Hls && window.Hls.isSupported()) {
-      hls = new window.Hls({ enableWorker: true });
-      const H = window.Hls;
-      hls.on(H.Events.MANIFEST_PARSED, () => {
-        if (unlocked && wantPlay) audio.play().catch(() => {});
-      });
-      hls.on(H.Events.ERROR, (_e, data) => {
-        if (!data || !data.fatal) return; // не-фатальные ошибки hls.js разрулит сам
-        // Сетевые/медиа-сбои пробуем восстановить, не роняя воспроизведение.
-        if (data.type === H.ErrorTypes.NETWORK_ERROR) {
-          hls.startLoad();
-        } else if (data.type === H.ErrorTypes.MEDIA_ERROR) {
-          hls.recoverMediaError();
-        } else {
-          note('ошибка потока', 'paused');
-        }
-      });
-      hls.loadSource(url);
-      hls.attachMedia(audio);
-    } else {
-      // Прогрессивный файл или нативный HLS (Safari) — обычный путь.
-      audio.src = url;
-      audio.load();
-      if (unlocked && wantPlay) audio.play().catch(() => {});
-    }
+    triedFallback = false;
+    const url = streamUrlFor(tok);
+    if (currentIsHls && canUseHlsJs()) playViaHls(url);
+    else playViaNative(url);
     setPlayIcon();
   }
   function clearAudio() {
@@ -1504,7 +1532,15 @@ function createBrowserAudio() {
       .catch(() => {});
   });
   audio.addEventListener('error', () => {
-    if (token) note('ошибка потока', 'paused');
+    if (!token) return;
+    // Нативный <audio> не смог — если это мог быть HLS (сервер ошибся с определением, а VK
+    // отдал .m3u8), один раз пробуем через hls.js, прежде чем показывать ошибку.
+    if (!triedFallback && !hls && canUseHlsJs()) {
+      triedFallback = true;
+      playViaHls(streamUrlFor(token));
+      return;
+    }
+    note('ошибка потока', 'paused');
   });
 
   // ── управление ──
@@ -1633,8 +1669,8 @@ function createBrowserAudio() {
       }
       // Новый трек стал текущим → грузим его оригинальный поток.
       if (np.playToken !== token) {
-        // Сервер помечает HLS; ВК гоним через hls.js всегда, даже если флаг не пришёл.
-        currentIsHls = !!np.hls || np.source === 'vk';
+        // Сервер определяет формат по URL (.m3u8 → HLS). Ошибётся — клиент переключится сам.
+        currentIsHls = !!np.hls;
         note('', '');
         loadToken(np.playToken);
       }

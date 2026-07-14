@@ -47,6 +47,15 @@ function isHlsResponse(url: string, contentType: string | null): boolean {
   return /\.m3u8(\?|$)/i.test(url);
 }
 
+/** Хост из URL для логов (или '?', если распарсить не удалось). */
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return '?';
+  }
+}
+
 /** eTLD+1 (последние две метки хоста) — грубое сравнение «тот же сайт». */
 function registrableDomain(host: string): string {
   return host.split('.').slice(-2).join('.');
@@ -122,19 +131,37 @@ async function serveUpstream(
     return;
   }
 
-  // HLS-манифест: переписываем ссылки на сегменты/ключи на наш прокси и отдаём текстом.
-  // forceHls — для ВК: трактуем первый ответ как манифест, даже если content-type «кривой».
+  const host = hostOf(upstreamUrl);
+
+  // HLS-манифест (URL .m3u8 / content-type mpegurl): переписываем ссылки на сегменты/ключи на
+  // наш прокси и отдаём текстом. Сюда попадают только .m3u8-URL, так что бинарный mp3 не портим.
   if (forceHls || isHlsResponse(upstreamUrl, upstream.headers.get('content-type'))) {
     let text: string;
     try {
       text = await upstream.text();
     } catch (err) {
       if (controller.signal.aborted) return;
-      logger.warn(`[browser] HLS-манифест не дочитан: ${err instanceof Error ? err.message : err}`);
+      logger.warn(`[browser] HLS-манифест не дочитан (${host}): ${err instanceof Error ? err.message : err}`);
       if (!res.headersSent) res.status(502).end();
       return;
     }
     if (controller.signal.aborted) return;
+
+    // Ответ по .m3u8-ссылке НЕ похож на манифест (истёкшая ссылка/ошибка/заглушка): не переписываем
+    // (иначе получится мусор), логируем начало ответа и отдаём как есть — клиент попробует нативно.
+    if (!/#EXTM3U/.test(text)) {
+      const head = text.slice(0, 80).replace(/\s+/g, ' ').trim();
+      logger.warn(`[browser] HLS: ответ ${host} не похож на манифест (status=${upstream.status}, начало="${head}")`);
+      res.status(upstream.status);
+      const ct = upstream.headers.get('content-type');
+      if (ct) res.setHeader('Content-Type', ct);
+      res.setHeader('Cache-Control', 'no-store');
+      res.end(text);
+      return;
+    }
+
+    const segs = (text.match(/#EXTINF/g) ?? []).length;
+    logger.info(`[browser] HLS-манифест ${host}: ${segs} сегм., отдаём переписанным.`);
     res.status(upstream.status);
     res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
     res.setHeader('Cache-Control', 'no-store');
@@ -143,6 +170,9 @@ async function serveUpstream(
   }
 
   // Обычный сегмент/прогрессивный поток — релеим статус (200/206/416), диапазон и байты как есть.
+  if (upstream.status >= 400) {
+    logger.warn(`[browser] upstream ${host} вернул статус ${upstream.status} (сегмент/файл).`);
+  }
   res.status(upstream.status);
   for (const h of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'content-disposition']) {
     const v = upstream.headers.get(h);
