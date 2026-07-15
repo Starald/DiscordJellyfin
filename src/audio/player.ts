@@ -64,6 +64,7 @@ export class GuildMusicPlayer {
   private loopOne = false;
   /** Разовый флаг: не повторять трек на этом переходе (skip/stop). */
   private suppressLoop = false;
+  private pauseNext = false;
   /** История недавно проигранных треков (свежие — в начале). */
   private history: HistoryItem[] = [];
   /** Колбэк при изменении истории (для сохранения на диск). */
@@ -184,6 +185,10 @@ export class GuildMusicPlayer {
       const resource = this.createResource(next);
       this.currentResource = resource;
       this.player.play(resource);
+      if (this.pauseNext) {
+        this.player.pause(true);
+        this.pauseNext = false;
+      }
       this.clearIdleTimer();
       this.recordHistory(next);
       // Голова очереди стала следующей — начинаем готовить её заранее, пока играет текущий.
@@ -266,6 +271,7 @@ export class GuildMusicPlayer {
   /** Пропустить текущий трек. Возвращает false, если играть нечего. */
   skip(): boolean {
     if (!this.current && this.queue.length === 0) return false;
+    this.pauseNext = this.isPaused;
     this.suppressLoop = true; // скип не должен повторять текущий трек
     // stop(true) → статус Idle → обработчик проиграет следующий.
     this.player.stop(true);
@@ -303,6 +309,7 @@ export class GuildMusicPlayer {
   stop(): void {
     this.queue = [];
     this.suppressLoop = true; // стоп не должен повторять трек
+    this.pauseNext = false;
     this.player.stop(true);
   }
 

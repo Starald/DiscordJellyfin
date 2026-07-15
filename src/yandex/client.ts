@@ -75,7 +75,7 @@ export class YandexMusic {
       title: t.title ?? '',
       artist: artistsOf(t),
       durationMs: t.durationMs ?? 0,
-      coverUrl: cover(t.coverUri ?? t.albums?.[0]?.coverUri, '200x200'),
+      coverUrl: cover(t.coverUri ?? t.albums?.[0]?.coverUri, '800x800'),
     };
   }
 
@@ -93,7 +93,7 @@ export class YandexMusic {
         artist: artistsOf(t),
         type: 'track' as const,
         durationMs: t.durationMs ?? 0,
-        coverUrl: cover(t.coverUri ?? t.albums?.[0]?.coverUri, '200x200'),
+        coverUrl: cover(t.coverUri ?? t.albums?.[0]?.coverUri, '800x800'),
       }));
     }
     if (type === 'album') {
@@ -103,7 +103,7 @@ export class YandexMusic {
         artist: artistsOf(a),
         year: a.year,
         type: 'album' as const,
-        coverUrl: cover(a.coverUri, '200x200'),
+        coverUrl: cover(a.coverUri, '800x800'),
       }));
     }
     if (type === 'artist') {
@@ -111,7 +111,7 @@ export class YandexMusic {
         id: String(a.id),
         name: a.name,
         type: 'artist' as const,
-        coverUrl: cover(a.cover?.uri, '200x200'),
+        coverUrl: cover(a.cover?.uri, '800x800'),
       }));
     }
     // playlist
@@ -120,7 +120,7 @@ export class YandexMusic {
       name: p.title,
       artist: p.owner?.name ?? p.owner?.login,
       type: 'playlist' as const,
-      coverUrl: cover(p.cover?.uri || p.ogImage, '200x200'),
+      coverUrl: cover(p.cover?.uri || p.ogImage, '800x800'),
     }));
   }
 
@@ -227,7 +227,7 @@ export class YandexMusic {
         artist: artistsOf(res),
         year: res.year,
         type: 'album',
-        coverUrl: cover(res.coverUri, '200x200'),
+        coverUrl: cover(res.coverUri, '800x800'),
         count: tracks.length,
       };
     }
@@ -253,7 +253,7 @@ export class YandexMusic {
       name: res.title ?? 'Плейлист',
       artist: res.owner?.name ?? res.owner?.login,
       type: 'playlist',
-      coverUrl: cover(res.cover?.uri || res.ogImage, '200x200'),
+      coverUrl: cover(res.cover?.uri || res.ogImage, '800x800'),
       count: tracks.length,
     };
   }

@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Логи — Jellyfin Discord Bot</title>
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
     <style>
       body {
         margin: 0;
@@ -61,11 +62,11 @@
   </head>
   <body>
     <header>
-      <span class="title">📋 Логи бота</span>
+      <span class="title">Логи бота</span>
       <input id="filter" placeholder="фильтр (напр. voice)" />
-      <button id="toggle">⏸ пауза</button>
+      <button id="toggle">пауза</button>
       <button id="clear">очистить вид</button>
-      <a href="/">← панель</a>
+      <a href="/">панель</a>
     </header>
     <pre id="log">загрузка…</pre>
 
@@ -116,7 +117,7 @@
       filterEl.addEventListener('input', render);
       toggleEl.addEventListener('click', () => {
         auto = !auto;
-        toggleEl.textContent = auto ? '⏸ пауза' : '▶ продолжить';
+        toggleEl.textContent = auto ? 'пауза' : 'продолжить';
         if (auto) poll();
       });
       document.getElementById('clear').addEventListener('click', () => {

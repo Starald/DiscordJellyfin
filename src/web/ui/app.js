@@ -196,7 +196,7 @@ const api = {
   },
 };
 
-const artUrl = (id) => (id ? `/art/${id}?h=128` : null);
+const artUrl = (id) => (id ? `/art/${id}?h=512` : null);
 
 // Обложка не загрузилась → подменяем картинку на плашку «нет фото».
 function imgFallback(img) {
@@ -1444,18 +1444,32 @@ function createBrowserAudio() {
     teardownHls();
     audio.src = url;
     audio.load();
-    if (unlocked && wantPlay) audio.play().catch(() => {});
+    if (unlocked && wantPlay) {
+      audio.play().catch(() => {});
+    } else {
+      audio.pause(); // Принудительно держим на паузе
+    }
   }
   // HLS через hls.js: сегменты/ключи проксирует сервер (переписанный манифест), CORS не мешает.
   function playViaHls(url) {
     teardownHls();
     const H = window.Hls;
-    const inst = new H({ enableWorker: true });
+    const inst = new H({ 
+      enableWorker: true,
+      debug: true 
+    });
     hls = inst;
     inst.on(H.Events.MANIFEST_PARSED, () => {
-      if (unlocked && wantPlay) audio.play().catch(() => {});
+      console.log('[HLS.js] Манифест успешно распарсен!');
+      if (unlocked && wantPlay) {
+        audio.play().catch(() => {});
+      } else {
+        audio.pause(); // Принудительно держим на паузе
+      }
     });
     inst.on(H.Events.ERROR, (_e, data) => {
+      console.error('[HLS.js ERROR]', '\nType:', data.type, '\nDetails:', data.details, '\nFatal:', data.fatal, '\nFull data:', data);
+
       if (hls !== inst) return; // событие от уже уничтоженного экземпляра — игнор
       if (!data || !data.fatal) return; // не-фатальные ошибки hls.js разрулит сам
       // Манифест не распарсился/не загрузился — это, скорее всего, НЕ HLS (VK отдал mp3).
@@ -1465,16 +1479,20 @@ function createBrowserAudio() {
         data.details === H.ErrorDetails.MANIFEST_LOAD_ERROR ||
         data.details === H.ErrorDetails.MANIFEST_INCOMPATIBLE_CODECS_ERROR;
       if (badManifest && !triedFallback) {
+        console.warn('[HLS.js] Плохой манифест, откатываемся на нативный <audio>...');
         triedFallback = true;
         playViaNative(url);
         return;
       }
       // Прочие сетевые/медиа-сбои пробуем восстановить, не роняя воспроизведение.
       if (data.type === H.ErrorTypes.NETWORK_ERROR) {
+        console.warn('[HLS.js] Сетевая ошибка, пробуем startLoad()...');
         inst.startLoad();
       } else if (data.type === H.ErrorTypes.MEDIA_ERROR) {
+        console.warn('[HLS.js] Медиа ошибка, пробуем recoverMediaError()...');
         inst.recoverMediaError();
       } else if (!triedFallback) {
+        console.warn('[HLS.js] Фатальная ошибка, откатываемся на нативный <audio>...');
         triedFallback = true;
         playViaNative(url);
       } else {
@@ -1488,6 +1506,11 @@ function createBrowserAudio() {
     token = tok;
     endedFor = null;
     triedFallback = false;
+
+    if (!wantPlay) {
+      audio.pause();
+    }
+
     const url = streamUrlFor(tok);
     if (currentIsHls && canUseHlsJs()) playViaHls(url);
     else playViaNative(url);
@@ -1576,15 +1599,16 @@ function createBrowserAudio() {
   // «Предыдущий» = в начало текущего трека (истории предыдущих на клиенте нет).
   $('plPrev')?.addEventListener('click', () => {
     unlocked = true;
+    wantPlay = !audio.paused;
     if (audio.src) {
       audio.currentTime = 0;
-      audio.play().catch(() => {});
+      if (wantPlay) audio.play().catch(() => {});
     }
   });
   // «Следующий» — общий skip (двигает единую очередь на сервере).
   $('plNext')?.addEventListener('click', async () => {
     unlocked = true;
-    wantPlay = true;
+    wantPlay = !audio.paused;
     await api.control('skip');
     poll();
   });
@@ -1633,6 +1657,7 @@ function createBrowserAudio() {
       if (!np) {
         empty.classList.remove('hidden');
         body.classList.add('hidden');
+        wantPlay = false;
         if (token) clearAudio();
         durationMs = 0;
         lastMetaKey = '';

@@ -43,8 +43,13 @@ const DESKTOP_UA =
 
 /** Похоже ли, что по этому URL/типу лежит HLS-манифест (плейлист .m3u8). */
 function isHlsResponse(url: string, contentType: string | null): boolean {
-  if (contentType && /mpegurl/i.test(contentType)) return true;
-  return /\.m3u8(\?|$)/i.test(url);
+  const ct = (contentType || '').toLowerCase();
+  // Если источник явно говорит, что это кусок аудио/видео — это точно не манифест
+  if (ct.includes('video/mp2t') || ct.includes('audio/') || ct.includes('video/mp4')) {
+    return false;
+  }
+  if (ct.includes('mpegurl')) return true;
+  return /\.m3u8(\?|$)/i.test(url) || /hls_playlist/i.test(url) || /manifest\.googlevideo\.com/i.test(url);
 }
 
 /** Хост из URL для логов (или '?', если распарсить не удалось). */
@@ -116,6 +121,8 @@ async function serveUpstream(
   const headers: Record<string, string> = { 'Accept-Encoding': 'identity', 'User-Agent': DESKTOP_UA };
   if (typeof req.headers.range === 'string') headers['Range'] = req.headers.range;
 
+  logger.info(`[PROXY REQ] Запрашиваем: ${upstreamUrl}`);
+
   let upstream: Awaited<ReturnType<typeof fetch>>;
   try {
     upstream = await fetch(upstreamUrl, {
@@ -125,7 +132,7 @@ async function serveUpstream(
     } as RequestInit & { dispatcher?: Dispatcher });
   } catch (err) {
     if (controller.signal.aborted) return; // клиент сам ушёл — это не ошибка
-    logger.warn(`[browser] Стрим-прокси: upstream недоступен: ${err instanceof Error ? err.message : err}`);
+    logger.warn(`[PROXY ERR] upstream недоступен: ${err instanceof Error ? err.message : err}`);
     if (!res.headersSent) res.status(502).end();
     else res.end();
     return;
@@ -133,25 +140,33 @@ async function serveUpstream(
 
   const host = hostOf(upstreamUrl);
 
+  const contentType = upstream.headers.get('content-type') || '';
+  const ctLower = contentType.toLowerCase();
+  const isBinaryChunk = ctLower.includes('video/mp2t') || ctLower.includes('audio/') || ctLower.includes('video/mp4');
+  
+  logger.info(`[PROXY RESP] Status: ${upstream.status} | Content-Type: "${contentType}" | isBinary: ${isBinaryChunk} | forceHls: ${forceHls}`);
+
   // HLS-манифест (URL .m3u8 / content-type mpegurl): переписываем ссылки на сегменты/ключи на
   // наш прокси и отдаём текстом. Сюда попадают только .m3u8-URL, так что бинарный mp3 не портим.
-  if (forceHls || isHlsResponse(upstreamUrl, upstream.headers.get('content-type'))) {
-    let text: string;
+  if (!isBinaryChunk && (forceHls || isHlsResponse(upstreamUrl, contentType))) {
+    let buf: Buffer;
     try {
-      text = await upstream.text();
+      buf = Buffer.from(await upstream.arrayBuffer());
     } catch (err) {
       if (controller.signal.aborted) return;
-      logger.warn(`[browser] HLS-манифест не дочитан (${host}): ${err instanceof Error ? err.message : err}`);
+      logger.warn(`[PROXY ERR] HLS-манифест не дочитан (${host}): ${err instanceof Error ? err.message : err}`);
       if (!res.headersSent) res.status(502).end();
       return;
     }
     if (controller.signal.aborted) return;
 
+    const text = buf.toString('utf8');
+
     // Ответ по .m3u8-ссылке НЕ похож на манифест (истёкшая ссылка/ошибка/заглушка): не переписываем
     // (иначе получится мусор), логируем начало ответа и отдаём как есть — клиент попробует нативно.
     if (!/#EXTM3U/.test(text)) {
       const head = text.slice(0, 80).replace(/\s+/g, ' ').trim();
-      logger.warn(`[browser] HLS: ответ ${host} не похож на манифест (status=${upstream.status}, начало="${head}")`);
+      logger.warn(`[PROXY WARN] HLS ложное срабатывание! Это не манифест (status=${upstream.status}, начало="${head}")`);
       res.status(upstream.status);
       const ct = upstream.headers.get('content-type');
       if (ct) res.setHeader('Content-Type', ct);
@@ -161,8 +176,8 @@ async function serveUpstream(
     }
 
     const segs = (text.match(/#EXTINF/g) ?? []).length;
-    logger.info(`[browser] HLS-манифест ${host}: ${segs} сегм., отдаём переписанным.`);
-    res.status(upstream.status);
+    logger.info(`[PROXY OK] HLS-манифест ${host}: ${segs} сегм., отдаём переписанным.`);
+    res.status(200);
     res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
     res.setHeader('Cache-Control', 'no-store');
     res.end(rewriteHlsManifest(text, upstreamUrl, token));
@@ -171,7 +186,9 @@ async function serveUpstream(
 
   // Обычный сегмент/прогрессивный поток — релеим статус (200/206/416), диапазон и байты как есть.
   if (upstream.status >= 400) {
-    logger.warn(`[browser] upstream ${host} вернул статус ${upstream.status} (сегмент/файл).`);
+    logger.warn(`[PROXY WARN] upstream ${host} вернул статус ${upstream.status} (сегмент/файл).`);
+  } else {
+    logger.info(`[PROXY OK] Стримминг бинарных данных (${host})...`);
   }
   res.status(upstream.status);
   for (const h of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'content-disposition']) {
@@ -622,7 +639,7 @@ export function startWebPanel(bot: Bot, config: AppConfig): void {
       return;
     }
     try {
-      let upstream = await fetch(`https://i.ytimg.com/vi/${id}/mqdefault.jpg`, {
+      let upstream = await fetch(`https://i.ytimg.com/vi/${id}/maxresdefault.jpg`, {
         signal: AbortSignal.timeout(8000),
       });
       if (!upstream.ok)

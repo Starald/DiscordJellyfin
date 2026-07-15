@@ -11,7 +11,7 @@
 }
 
 # Явный http→https редирект (без авто-вычисления порта).
-http://starald.ru, http://ds.starald.ru, http://router.starald.ru {
+http://starald.ru, http://ds.starald.ru {
 	redir https://{host}{uri}
 }
 
@@ -36,14 +36,6 @@ ds.starald.ru {
 # Слушает только 127.0.0.1. Бот ходит сюда: JELLYFIN_URL=http://127.0.0.1:8731
 http://127.0.0.1:8731 {
 	reverse_proxy https://127.0.0.1:8920 {
-		transport http {
-			tls_insecure_skip_verify
-		}
-	}
-}
-
-router.starald.ru {
-	reverse_proxy https://192.168.100.1 {
 		transport http {
 			tls_insecure_skip_verify
 		}

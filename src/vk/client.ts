@@ -35,7 +35,7 @@ type Raw = any;
 
 function coverOf(a: Raw): string | undefined {
   const t = a?.album?.thumb;
-  return t?.photo_300 ?? t?.photo_270 ?? t?.photo_135 ?? undefined;
+  return t?.photo_1200 ?? t?.photo_600 ?? t?.photo_300 ?? t?.photo_270 ?? t?.photo_135 ?? undefined;
 }
 
 function audioToTrack(a: Raw): VkTrack {

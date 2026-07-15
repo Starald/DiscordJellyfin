@@ -22,7 +22,9 @@ export interface BrowserNowPlaying {
 
 /** Похож ли стрим-URL на HLS-манифест (плейлист .m3u8). */
 export function isHlsUrl(url: string | undefined): boolean {
-  return !!url && /\.m3u8(\?|$)/i.test(url);
+  if (!url) return false;
+  // Проверяем наличие .m3u8, а также маркеры HLS от YouTube/ВК
+  return /\.m3u8(\?|$)/i.test(url) || /hls_playlist/i.test(url) || /manifest\.googlevideo\.com/i.test(url);
 }
 
 export interface BrowserQueueSnapshot {
