@@ -925,10 +925,23 @@ h3 {
 .pl-artist {
   color: var(--muted);
   text-align: center;
-  margin: 2px 0 12px;
+  margin: 2px 0 6px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.pl-format {
+  display: block;
+  width: fit-content;
+  margin: 0 auto 12px;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  text-align: center;
 }
 .pl-seek {
   margin-bottom: 6px;
@@ -1049,8 +1062,49 @@ h3 {
   height: 4px;
 }
 
+#jellyfinLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#jellyfinLink svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+
+#adminBtn, #historyBtn, #logout {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px; /* Квадратная форма */
+}
+
+#adminBtn .material-icons, #historyBtn .material-icons, #logout .material-icons {
+  font-size: 18px; /* Одинаковый размер иконок на ПК */
+}
+
 /* Плеер на телефоне: крупнее арт и главная кнопка, удобные тап-зоны. */
 @media (max-width: 760px) {
+
+  #jellyfinLink {
+    gap: 4px; /* Уменьшаем расстояние между иконкой и текстом */
+  }
+
+  #jellyfinLink svg {
+    width: 13px;  /* Делаем иконку меньше */
+    height: 13px;
+  }
+  
+  #adminBtn, #historyBtn, #logout {
+    padding: 5px;
+  }
+
+  #adminBtn .material-icons, #historyBtn .material-icons, #logout .material-icons {
+    font-size: 14px;
+  }
+  
   .player {
     padding: 14px;
   }

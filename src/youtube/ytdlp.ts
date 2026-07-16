@@ -240,18 +240,59 @@ export class YouTube {
 
   /** Прямой аудио-URL для воспроизведения (на момент запуска трека). */
   async getAudioUrl(videoId: string): Promise<string> {
+    return (await this.getAudioInfo(videoId)).url;
+  }
+
+  /**
+   * То же самое, но одним вызовом yt-dlp заодно отдаёт контейнер/битрейт выбранного
+   * формата — нужно для отображения в браузерном плеере (Discord-режим это игнорирует,
+   * ему по-прежнему достаточно getAudioUrl()). Второй прогон yt-dlp не нужен: значения
+   * печатаются тем же вызовом, что резолвит ссылку.
+   */
+  async getAudioInfo(
+    videoId: string,
+  ): Promise<{ url: string; container?: string; bitrateKbps?: number }> {
     const url = `https://www.youtube.com/watch?v=${videoId}`;
-    // Извлечение аудио — с куки (обход анти-бот проверки).
+    // Извлечение аудио — с куки (обход анти-бот проверки). %(.{url,ext,abr,acodec})j —
+    // одной строкой JSON с нужными полями выбранного формата, вместо -g (только URL).
     const stdout = await this.run(
-      [...this.commonArgs(), ...this.cookieArgs(), '-f', 'bestaudio', '-g', url],
+      [
+        ...this.commonArgs(),
+        ...this.cookieArgs(),
+        '-f',
+        'bestaudio',
+        '--print',
+        '%(.{url,ext,abr,acodec})j',
+        url,
+      ],
       `аудио-URL ${videoId}`,
     );
-    const first = stdout
+    const line = stdout
       .split(/\r?\n/)
       .map((l) => l.trim())
       .find((l) => l.length > 0);
-    if (!first) throw new Error('yt-dlp не вернул аудио-URL');
-    return first;
+    if (!line) throw new Error('yt-dlp не вернул аудио-URL');
+
+    let parsed: { url?: string; ext?: string; abr?: number; acodec?: string } | undefined;
+    try {
+      parsed = JSON.parse(line) as typeof parsed;
+    } catch {
+      parsed = undefined;
+    }
+    // Если по какой-то причине JSON не распарсился, а сама строка похожа на URL —
+    // не роняем воспроизведение, просто останемся без контейнера/битрейта.
+    const audioUrl = parsed?.url ?? (line.startsWith('http') ? line : undefined);
+    if (!audioUrl) throw new Error('yt-dlp не вернул аудио-URL');
+
+    return {
+      url: audioUrl,
+      // acodec часто вида "opus"/"mp4a.40.2" — берём контейнер (ext), он понятнее пользователю.
+      container: parsed?.ext,
+      bitrateKbps:
+        typeof parsed?.abr === 'number' && Number.isFinite(parsed.abr)
+          ? Math.round(parsed.abr)
+          : undefined,
+    };
   }
 
   /** Инфо одного видео по id: быстрый путь через Data API, иначе yt-dlp. */

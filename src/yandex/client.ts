@@ -152,6 +152,17 @@ export class YandexMusic {
 
   // ── Стрим-URL (download-info → подпись) ──────────────────────────────────────
   async getStreamUrl(trackId: string): Promise<string> {
+    return (await this.getStreamInfo(trackId)).url;
+  }
+
+  /**
+   * То же самое, но заодно отдаёт битрейт выбранного варианта — он и так уже вычисляется
+   * при выборе лучшего mp3-качества, просто раньше не возвращался наружу. Нужно для
+   * отображения в браузерном плеере (Discord-режим по-прежнему зовёт getStreamUrl()).
+   */
+  async getStreamInfo(
+    trackId: string,
+  ): Promise<{ url: string; container: 'mp3'; bitrateKbps?: number }> {
     const di = await this.get(`/tracks/${trackId}/download-info`);
     const options: Raw[] = di.result ?? [];
     const mp3 = options
@@ -171,7 +182,11 @@ export class YandexMusic {
       .createHash('md5')
       .update(SIGN_SALT + path.substring(1) + s)
       .digest('hex');
-    return `https://${host}/get-mp3/${sign}/${ts}${path}`;
+    return {
+      url: `https://${host}/get-mp3/${sign}/${ts}${path}`,
+      container: 'mp3',
+      bitrateKbps: typeof mp3.bitrateInKbps === 'number' ? mp3.bitrateInKbps : undefined,
+    };
   }
 
   // ── Разбор ссылки music.yandex.ru ───────────────────────────────────────────

@@ -13,6 +13,12 @@ export interface NameGuidPair {
   Id?: string;
 }
 
+export interface JellyfinMediaSource {
+  Container?: string;
+  /** Битрейт всего источника в бит/с (аудиофайлы — практически всегда только звук). */
+  Bitrate?: number;
+}
+
 export interface JellyfinItem {
   Id: string;
   Name: string;
@@ -30,6 +36,8 @@ export interface JellyfinItem {
   ChildCount?: number;
   ImageTags?: Record<string, string>;
   AlbumPrimaryImageTag?: string;
+  /** Запрашивается через Fields=MediaSources — формат/битрейт для браузерного плеера. */
+  MediaSources?: JellyfinMediaSource[];
 }
 
 export interface ItemsResponse {

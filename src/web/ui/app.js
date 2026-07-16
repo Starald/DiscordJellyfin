@@ -349,10 +349,10 @@ function renderAdmin(isAdmin) {
   const b = $('adminBody');
   if (isAdmin) {
     b.innerHTML =
-      `<button class="adminlink primary" id="adminCert">Сертификат сайта</button>` +
-      `<button class="adminlink primary" id="adminLogs">Логи бота</button>` +
-      `<button class="adminlink admin-restart" id="adminRestart">Перезагрузить бота</button>` +
-      `<button class="adminlink admin-lock" id="adminLock">Выйти из админки</button>`;
+      `<button class="adminlink primary" id="adminCert">Сертификат</button>` +
+      `<button class="adminlink primary" id="adminLogs">Логи</button>` +
+      `<button class="adminlink admin-restart" id="adminRestart">Перезагрузить</button>` +
+      `<button class="adminlink admin-lock" id="adminLock">Выйти из настроек</button>`;
     $('adminCert').addEventListener('click', () => window.open('cert.html', '_blank'));
     $('adminLogs').addEventListener('click', () => window.open('logs.html', '_blank'));
     $('adminRestart').addEventListener('click', async () => {
@@ -1372,6 +1372,7 @@ function createBrowserAudio() {
   const art = $('plArt');
   const titleEl = $('plTitle');
   const artistEl = $('plArtist');
+  const formatEl = $('plFormat');
   const seek = $('plSeek');
   const curEl = $('plCur');
   const durEl = $('plDur');
@@ -1418,9 +1419,6 @@ function createBrowserAudio() {
   function note(text, cls) {
     noteEl.textContent = text;
     noteEl.className = 'pl-note' + (cls ? ' ' + cls : '');
-  }
-  function setStatus() {
-    $('status').textContent = !token ? 'готово' : audio.paused ? 'пауза' : 'воспроизведение';
   }
   function teardownHls() {
     if (hls) {
@@ -1535,11 +1533,9 @@ function createBrowserAudio() {
   audio.addEventListener('play', () => {
     wantPlay = true;
     setPlayIcon();
-    setStatus();
   });
   audio.addEventListener('pause', () => {
     setPlayIcon();
-    setStatus();
   });
   audio.addEventListener('waiting', () => note('загрузка…', 'loading-note'));
   audio.addEventListener('playing', () => note('', ''));
@@ -1662,7 +1658,6 @@ function createBrowserAudio() {
         durationMs = 0;
         lastMetaKey = '';
         note('', '');
-        setStatus();
         return;
       }
       empty.classList.add('hidden');
@@ -1671,11 +1666,28 @@ function createBrowserAudio() {
 
       // Метаданные (арт/название/исполнитель) обновляем только при смене трека.
       const artSrc = np.artId ? artUrl(np.artId) : np.thumb || null;
-      const metaKey = [np.title, np.artist, np.durationMs, artSrc, np.source].join('|');
+      const metaKey = [
+        np.title,
+        np.artist,
+        np.durationMs,
+        artSrc,
+        np.source,
+        np.container,
+        np.bitrateKbps,
+      ].join('|');
       if (metaKey !== lastMetaKey) {
         lastMetaKey = metaKey;
         titleEl.innerHTML = `${srcBadge(np.source)} ${escapeHtml(np.title)}`;
         artistEl.textContent = np.artist || '';
+        if (np.container || np.bitrateKbps) {
+          const parts = [];
+          if (np.container) parts.push(np.container.toUpperCase());
+          if (np.bitrateKbps) parts.push(`${np.bitrateKbps} кбит/с`);
+          formatEl.textContent = parts.join(' · ');
+          formatEl.classList.remove('hidden');
+        } else {
+          formatEl.classList.add('hidden');
+        }
         if (artSrc) {
           art.src = artSrc;
           art.classList.remove('hidden');
@@ -1699,7 +1711,6 @@ function createBrowserAudio() {
         note('', '');
         loadToken(np.playToken);
       }
-      setStatus();
     },
   };
 }

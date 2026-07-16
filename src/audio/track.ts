@@ -28,6 +28,11 @@ export interface Track {
   prefetchState?: 'loading' | 'ready' | 'error';
   /** Внутреннее: текущий идущий resolve (мемоизация, чтобы не резолвить дважды). Транзиентное. */
   resolving?: Promise<void>;
+  /** Формат контейнера (mp3/flac/ogg/webm и т.п.) — для браузерного плеера. Известен не для
+   *  всех источников: Jellyfin/Яндекс/ВК — сразу или после resolve(); YouTube — после resolve(). */
+  container?: string;
+  /** Битрейт в кбит/с — для браузерного плеера. Известен не для всех источников (у ВК нет). */
+  bitrateKbps?: number;
 }
 
 /** Преобразует элемент Jellyfin (Audio) в трек с готовым стрим-URL и обложкой. */
@@ -42,6 +47,7 @@ export function itemToTrack(
     'Неизвестный исполнитель';
   const imageItemId = item.AlbumId ?? item.Id;
   const imageTag = item.AlbumPrimaryImageTag ?? item.ImageTags?.Primary;
+  const src = item.MediaSources?.[0];
 
   return {
     id: item.Id,
@@ -54,5 +60,10 @@ export function itemToTrack(
     imageUrl: jellyfin.getPrimaryImageUrl(imageItemId, imageTag),
     requestedBy,
     source: 'jellyfin',
+    container: src?.Container,
+    bitrateKbps:
+      typeof src?.Bitrate === 'number' && Number.isFinite(src.Bitrate)
+        ? Math.round(src.Bitrate / 1000)
+        : undefined,
   };
 }

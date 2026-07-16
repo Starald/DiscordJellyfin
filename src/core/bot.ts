@@ -99,6 +99,10 @@ export interface BrowserBotState {
     playToken: string | null;
     /** true — поток HLS (.m3u8): клиент играет его через hls.js, а не нативным <audio>. */
     hls: boolean;
+    /** Формат контейнера (mp3/flac/webm и т.п.) — известен не для всех источников. */
+    container?: string;
+    /** Битрейт в кбит/с — известен не для всех источников (у ВК нет). */
+    bitrateKbps?: number;
   } | null;
   queue: {
     title: string;
@@ -846,7 +850,12 @@ export class Bot {
       durationMs: opts.durationMs ?? 0,
       streamUrl: '',
       thumbUrl: `/yt/thumb/${id}`,
-      resolve: () => this.youtube.getAudioUrl(id),
+      resolve: async () => {
+        const info = await this.youtube.getAudioInfo(id);
+        track.container = info.container;
+        track.bitrateKbps = info.bitrateKbps;
+        return info.url;
+      },
       source: 'youtube',
       proxy: this.config.youtube.proxy,
     };
@@ -860,17 +869,25 @@ export class Bot {
   }): Promise<PlayResult> {
     const videos = await this.ytPlaylistVideos(opts.url);
     if (videos.length === 0) return { ok: false, message: 'В плейлисте нет видео.' };
-    const tracks: Track[] = videos.map((v) => ({
-      id: `yt-${v.id}`,
-      title: v.title,
-      artist: v.channel ?? 'YouTube',
-      durationMs: v.durationMs,
-      streamUrl: '',
-      thumbUrl: `/yt/thumb/${v.id}`,
-      resolve: () => this.youtube.getAudioUrl(v.id),
-      source: 'youtube',
-      proxy: this.config.youtube.proxy,
-    }));
+    const tracks: Track[] = videos.map((v) => {
+      const track: Track = {
+        id: `yt-${v.id}`,
+        title: v.title,
+        artist: v.channel ?? 'YouTube',
+        durationMs: v.durationMs,
+        streamUrl: '',
+        thumbUrl: `/yt/thumb/${v.id}`,
+        resolve: async () => {
+          const info = await this.youtube.getAudioInfo(v.id);
+          track.container = info.container;
+          track.bitrateKbps = info.bitrateKbps;
+          return info.url;
+        },
+        source: 'youtube',
+        proxy: this.config.youtube.proxy,
+      };
+      return track;
+    });
     this.browserPlayer.enqueue(tracks, opts.position ?? 'end');
     return {
       ok: true,
@@ -920,17 +937,25 @@ export class Bot {
     if (ymTracks.length === 0) {
       return { ok: false, message: 'Не нашёл треков (для стрима нужна подписка Плюс?).' };
     }
-    const tracks: Track[] = ymTracks.map((t) => ({
-      id: `ym-${t.id}`,
-      title: t.title,
-      artist: t.artist,
-      durationMs: t.durationMs,
-      streamUrl: '',
-      thumbUrl: t.coverUrl,
-      resolve: () => this.yandex.getStreamUrl(t.id),
-      source: 'yandex',
-      proxy: this.config.yandex.proxy,
-    }));
+    const tracks: Track[] = ymTracks.map((t) => {
+      const track: Track = {
+        id: `ym-${t.id}`,
+        title: t.title,
+        artist: t.artist,
+        durationMs: t.durationMs,
+        streamUrl: '',
+        thumbUrl: t.coverUrl,
+        resolve: async () => {
+          const info = await this.yandex.getStreamInfo(t.id);
+          track.container = info.container;
+          track.bitrateKbps = info.bitrateKbps;
+          return info.url;
+        },
+        source: 'yandex',
+        proxy: this.config.yandex.proxy,
+      };
+      return track;
+    });
     this.browserPlayer.enqueue(tracks, opts.position ?? 'end');
     return { ok: true, message: `${label} — в очередь браузера`, enqueued: tracks.length };
   }
@@ -970,17 +995,24 @@ export class Bot {
     if (vkTracks.length === 0) {
       return { ok: false, message: 'Не нашёл треков ВКонтакте (недоступны в регионе?).' };
     }
-    const tracks: Track[] = vkTracks.map((t) => ({
-      id: `vk-${t.id}`,
-      title: t.title,
-      artist: t.artist,
-      durationMs: t.durationMs,
-      streamUrl: '',
-      thumbUrl: t.coverUrl,
-      resolve: () => this.vk.getStreamUrl(t.id),
-      source: 'vk',
-      proxy: this.config.vk.proxy,
-    }));
+    const tracks: Track[] = vkTracks.map((t) => {
+      const track: Track = {
+        id: `vk-${t.id}`,
+        title: t.title,
+        artist: t.artist,
+        durationMs: t.durationMs,
+        streamUrl: '',
+        thumbUrl: t.coverUrl,
+        resolve: async () => {
+          const info = await this.vk.getStreamInfo(t.id);
+          track.container = info.container;
+          return info.url;
+        },
+        source: 'vk',
+        proxy: this.config.vk.proxy,
+      };
+      return track;
+    });
     this.browserPlayer.enqueue(tracks, opts.position ?? 'end');
     return { ok: true, message: `${label} — в очередь браузера`, enqueued: tracks.length };
   }
@@ -1034,6 +1066,8 @@ export class Bot {
             source: np.track.source,
             playToken: np.playToken,
             hls: np.hls,
+            container: np.track.container,
+            bitrateKbps: np.track.bitrateKbps,
           }
         : null,
       queue: snapshot.upcoming.map((t) => ({

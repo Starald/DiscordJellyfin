@@ -101,6 +101,7 @@ export class JellyfinClient {
       EnableTotalRecordCount: false,
       ImageTypeLimit: 1,
       EnableImageTypes: 'Primary',
+      Fields: 'MediaSources',
     });
     return res.Items ?? [];
   }
@@ -128,6 +129,7 @@ export class JellyfinClient {
       EnableTotalRecordCount: true,
       ImageTypeLimit: 1,
       EnableImageTypes: 'Primary',
+      Fields: 'MediaSources',
     });
     return { items: res.Items ?? [], total: res.TotalRecordCount ?? res.Items?.length ?? 0 };
   }
@@ -143,6 +145,7 @@ export class JellyfinClient {
       Recursive: true,
       SortBy: 'ParentIndexNumber,IndexNumber,SortName',
       SortOrder: 'Ascending',
+      Fields: 'MediaSources',
     });
     return res.Items ?? [];
   }
@@ -152,7 +155,11 @@ export class JellyfinClient {
    * Используем /Items?Ids=, т.к. /Items/{id} на Jellyfin 10.11 отдаёт 400 без userId.
    */
   async getItem(itemId: string): Promise<JellyfinItem | null> {
-    const res = await this.request<ItemsResponse>('/Items', { Ids: itemId, Recursive: true });
+    const res = await this.request<ItemsResponse>('/Items', {
+      Ids: itemId,
+      Recursive: true,
+      Fields: 'MediaSources',
+    });
     return res.Items?.[0] ?? null;
   }
 
@@ -165,6 +172,7 @@ export class JellyfinClient {
       SortBy: 'Album,ParentIndexNumber,IndexNumber,SortName',
       SortOrder: 'Ascending',
       Limit: limit,
+      Fields: 'MediaSources',
     });
     return res.Items ?? [];
   }
@@ -196,7 +204,10 @@ export class JellyfinClient {
     ];
     for (const userId of order) {
       try {
-        const res = await this.request<ItemsResponse>(`/Playlists/${playlistId}/Items`, { userId });
+        const res = await this.request<ItemsResponse>(`/Playlists/${playlistId}/Items`, {
+          userId,
+          Fields: 'MediaSources',
+        });
         if (res.Items && res.Items.length > 0) return res.Items;
       } catch {
         /* пробуем следующего пользователя */
@@ -212,6 +223,7 @@ export class JellyfinClient {
       Recursive: true,
       SortBy: 'Random',
       Limit: limit,
+      Fields: 'MediaSources',
     });
     return res.Items ?? [];
   }

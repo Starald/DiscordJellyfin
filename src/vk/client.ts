@@ -155,11 +155,21 @@ export class Vk {
 
   // ── Стрим-URL (берётся из самого аудио-объекта, свежим на момент запуска) ────
   async getStreamUrl(id: string): Promise<string> {
+    return (await this.getStreamInfo(id)).url;
+  }
+
+  /**
+   * То же самое, но заодно определяет формат по самой ссылке — ВК не отдаёт битрейт/кодек
+   * через API, только заметно, что часть треков приходит как HLS (.m3u8), а часть — прямым
+   * mp3. Нужно для отображения в браузерном плеере (Discord-режим по-прежнему getStreamUrl()).
+   */
+  async getStreamInfo(id: string): Promise<{ url: string; container?: string }> {
     const r = await this.call('audio.getById', { audios: id });
     const a = Array.isArray(r) ? r[0] : null;
     const url: string = a?.url ?? '';
     if (!url) throw new Error('ВК не отдал ссылку на трек (недоступен в регионе/удалён?).');
-    return url;
+    const isHls = /\.m3u8(\?|$)/i.test(new URL(url).pathname);
+    return { url, container: isHls ? 'hls' : 'mp3' };
   }
 
   // ── Разбор ссылки vk.com ─────────────────────────────────────────────────────
